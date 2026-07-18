@@ -1,0 +1,2 @@
+-- Default exercises are copied for each auth user by 0001_initial.sql.
+-- Keep this file intentionally free of test users and production sample data.

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-labelledby="title desc">
+  <title id="title">元気に構えるマソ君</title>
+  <desc id="desc">朱色の丸い身体に白いヘッドバンドを巻いた、筋トレ好きのキャラクター</desc>
+  <g fill="none" stroke="#17241f" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M85 183C47 172 31 193 39 218c7 21 31 25 53 5" fill="#ed6044" stroke-width="13"/>
+    <path d="M235 183c38-11 54 10 46 35-7 21-31 25-53 5" fill="#ed6044" stroke-width="13"/>
+    <path d="M91 204c-12 19-18 42-9 60 11 21 34 15 52-4" fill="#ed6044" stroke-width="13"/>
+    <path d="M229 204c12 19 18 42 9 60-11 21-34 15-52-4" fill="#ed6044" stroke-width="13"/>
+    <path d="M160 42c-59 0-100 42-100 106 0 72 38 121 100 121s100-49 100-121C260 84 219 42 160 42Z" fill="#ed6044" stroke-width="14"/>
+    <path d="M72 91c29-18 56-24 88-24s59 6 88 24" stroke="#fbfdf8" stroke-width="22"/>
+    <path d="M77 89c25 8 51 12 83 12s58-4 83-12" stroke="#17241f" stroke-width="7"/>
+    <path d="M121 137v7M199 137v7" stroke-width="13"/>
+    <path d="M132 181c17 14 39 14 56 0" stroke-width="10"/>
+    <path d="M112 215c30 12 66 12 96 0" stroke="#f5c85d" stroke-width="18"/>
+    <path d="M118 215h84" stroke-width="7"/>
+    <path d="M57 207c10-14 20-18 35-11M263 207c-10-14-20-18-35-11" stroke-width="8"/>
+  </g>
+</svg>
