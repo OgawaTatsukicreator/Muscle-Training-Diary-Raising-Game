@@ -21,7 +21,7 @@ export default function ErrorPage({
         <button
           type="button"
           onClick={unstable_retry}
-          className="mt-6 inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-ink px-6 font-black text-white"
+          className="mt-6 inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-accent px-6 font-black text-white"
         >
           <RotateCcw aria-hidden="true" size={18} />
           もう一度読み込む

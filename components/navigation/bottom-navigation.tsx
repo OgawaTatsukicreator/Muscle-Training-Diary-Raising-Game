@@ -5,9 +5,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const items = [
-  { href: "/", label: "ホーム", icon: House },
+  { href: "/", label: "マソ君", icon: House },
   { href: "/records", label: "記録", icon: CalendarDays },
-  { href: "/analytics", label: "分析", icon: BarChart3 },
+  { href: "/analytics", label: "履歴分析", icon: BarChart3 },
 ] as const;
 
 export function ConditionalBottomNavigation() {
@@ -24,9 +24,9 @@ export function ConditionalBottomNavigation() {
   return (
     <nav
       aria-label="メインナビゲーション"
-      className="fixed inset-x-0 bottom-0 z-50 border-t border-line bg-surface/94 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl"
+      className="fixed bottom-0 left-1/2 z-50 w-full max-w-[640px] -translate-x-1/2 border-x border-t border-line bg-white pb-[env(safe-area-inset-bottom)]"
     >
-      <div className="mx-auto grid h-[76px] max-w-[560px] grid-cols-3 px-4">
+      <div className="mx-auto grid h-[70px] grid-cols-3">
         {items.map((item) => {
           const active =
             item.href === "/"
@@ -39,17 +39,17 @@ export function ConditionalBottomNavigation() {
               key={item.href}
               href={item.href}
               aria-current={active ? "page" : undefined}
-              className={`relative flex min-h-12 flex-col items-center justify-center gap-1 rounded-2xl text-[12px] font-bold transition-colors ${
-                active ? "text-accent-strong" : "text-muted hover:text-ink"
+              className={`relative flex min-h-12 flex-col items-center justify-center gap-1 border-r border-line text-[12px] font-bold transition-colors last:border-r-0 ${
+                active ? "text-accent" : "text-ink hover:bg-canvas/55"
               }`}
             >
               <span
                 aria-hidden="true"
-                className={`absolute top-1 h-1 w-7 rounded-full transition-colors ${
+                className={`absolute inset-x-5 top-0 h-0.5 transition-colors ${
                   active ? "bg-accent" : "bg-transparent"
                 }`}
               />
-              <Icon aria-hidden="true" size={21} strokeWidth={active ? 2.6 : 2} />
+              <Icon aria-hidden="true" size={19} strokeWidth={active ? 2.5 : 1.8} />
               <span>{item.label}</span>
             </Link>
           );

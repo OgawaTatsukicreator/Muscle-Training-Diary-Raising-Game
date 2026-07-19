@@ -12,7 +12,7 @@ export default function NotFound() {
         </p>
         <Link
           href="/"
-          className="mt-6 inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-ink px-6 font-black text-white"
+          className="mt-6 inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-accent px-6 font-black text-white"
         >
           <ArrowLeft aria-hidden="true" size={18} />
           ホームへ戻る

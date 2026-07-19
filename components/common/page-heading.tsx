@@ -14,16 +14,16 @@ export function PageHeading({
   action,
 }: PageHeadingProps) {
   return (
-    <header className="mb-7 flex items-start justify-between gap-4">
+    <header className="mb-6 flex items-start justify-between gap-4 border-b border-line pb-4">
       <div>
-        <p className="mb-2 text-[11px] font-black tracking-[0.18em] text-accent-strong uppercase">
+        <p className="mb-1 text-[10px] font-bold tracking-[0.12em] text-muted uppercase">
           {eyebrow}
         </p>
-        <h1 className="text-[clamp(1.75rem,7vw,2.5rem)] leading-[1.1] font-black tracking-[-0.055em] text-ink">
+        <h1 className="text-2xl leading-tight font-semibold tracking-[-0.04em] text-ink">
           {title}
         </h1>
         {description ? (
-          <p className="mt-2 max-w-xl text-sm leading-6 font-medium text-muted">
+          <p className="mt-2 max-w-xl text-[13px] leading-5 text-muted">
             {description}
           </p>
         ) : null}

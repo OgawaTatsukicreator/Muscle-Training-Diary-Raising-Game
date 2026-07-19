@@ -3,6 +3,7 @@
 import {
   ArrowLeft,
   Check,
+  ChevronRight,
   Dumbbell,
   Layers3,
   Plus,
@@ -19,7 +20,6 @@ import { StorageNotice } from "@/components/common/storage-notice";
 import { useDemoData } from "@/components/providers/demo-data-provider";
 import {
   dateKeyInTimeZone,
-  formatJapaneseDate,
   isDateKey,
 } from "@/lib/domain/date";
 import {
@@ -40,17 +40,20 @@ type FieldErrors = Partial<
 export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
   const router = useRouter();
   const { exercises, settings, addExercise, addWorkout, isReady } = useDemoData();
+  const formRef = useRef<HTMLFormElement>(null);
+  const exerciseStepHeadingRef = useRef<HTMLHeadingElement>(null);
   const submittingRef = useRef(false);
+  const [step, setStep] = useState<"exercise" | "details">("exercise");
   const [workoutDate, setWorkoutDate] = useState(initialDate);
   const [bodyPart, setBodyPart] = useState<BodyPart>("chest");
-  const firstExercise = exercises.find((exercise) => exercise.bodyPart === "chest");
-  const [exerciseId, setExerciseId] = useState(firstExercise?.id ?? "");
+  const [exerciseId, setExerciseId] = useState("");
   const [weight, setWeight] = useState("50");
   const [unitOverride, setUnitOverride] = useState<WeightUnit | null>(null);
   const [reps, setReps] = useState("10");
   const [setsOverride, setSetsOverride] = useState<string | null>(null);
   const [memo, setMemo] = useState("");
   const [newExerciseName, setNewExerciseName] = useState("");
+  const [newExerciseError, setNewExerciseError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -58,6 +61,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
     () => exercises.filter((exercise) => exercise.bodyPart === bodyPart),
     [bodyPart, exercises],
   );
+  const selectedExercise = exercises.find((exercise) => exercise.id === exerciseId);
   const unit = unitOverride ?? settings.weightUnit;
   const sets = setsOverride ?? String(settings.defaultSets);
   const volume = calculateVolumeKg(
@@ -70,23 +74,28 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
 
   function selectBodyPart(nextBodyPart: BodyPart) {
     setBodyPart(nextBodyPart);
-    const nextExercise = exercises.find(
-      (exercise) => exercise.bodyPart === nextBodyPart,
-    );
-    setExerciseId(nextExercise?.id ?? "");
+    setExerciseId("");
     setMessage(null);
+  }
+
+  function selectExercise(nextExerciseId: string) {
+    setExerciseId(nextExerciseId);
+    setFieldErrors((current) => ({ ...current, exerciseId: undefined }));
+    setMessage(null);
+    setStep("details");
   }
 
   function handleAddExercise() {
     const result = addExercise(newExerciseName, bodyPart);
 
     if (!result.ok) {
-      setMessage(result.message);
+      setNewExerciseError(result.message);
       return;
     }
 
-    setExerciseId(result.data.id);
+    setNewExerciseError(null);
     setNewExerciseName("");
+    selectExercise(result.data.id);
     setMessage(`${result.data.name}を種目に追加しました。`);
   }
 
@@ -97,6 +106,23 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
       nextErrors[field] ??= issue.message;
     }
     return nextErrors;
+  }
+
+  function focusFirstInvalidField(nextErrors: FieldErrors) {
+    if (nextErrors.exerciseId) {
+      setStep("exercise");
+    }
+
+    window.requestAnimationFrame(() => {
+      if (nextErrors.exerciseId) {
+        exerciseStepHeadingRef.current?.focus();
+        return;
+      }
+
+      formRef.current
+        ?.querySelector<HTMLElement>('[aria-invalid="true"]')
+        ?.focus();
+    });
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -119,8 +145,10 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
     const parsed = workoutDraftSchema.safeParse(draft);
 
     if (!parsed.success) {
-      setFieldErrors(collectErrors(parsed.error));
+      const nextErrors = collectErrors(parsed.error);
+      setFieldErrors(nextErrors);
       setMessage("赤字の項目を確認してください。");
+      focusFirstInvalidField(nextErrors);
       return;
     }
 
@@ -134,8 +162,10 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
     if (!result.ok) {
       submittingRef.current = false;
       setIsSubmitting(false);
-      setFieldErrors((result.fieldErrors ?? {}) as FieldErrors);
+      const nextErrors = (result.fieldErrors ?? {}) as FieldErrors;
+      setFieldErrors(nextErrors);
       setMessage(result.message);
+      focusFirstInvalidField(nextErrors);
       return;
     }
 
@@ -144,299 +174,403 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
 
   return (
     <main className="app-page--focused">
-      <div className="mx-auto w-full max-w-[760px]">
-        <header className="mb-6 flex items-center gap-4">
-          <Link
-            href={`/records?date=${encodeURIComponent(workoutDate)}`}
-            aria-label="記録画面へ戻る"
-            className="grid size-12 shrink-0 place-items-center rounded-full border border-line bg-surface text-ink"
-          >
-            <ArrowLeft aria-hidden="true" size={20} />
-          </Link>
-          <div>
-            <p className="text-[11px] font-black tracking-[0.16em] text-accent-strong uppercase">
-              Workout entry
+      <div className="mx-auto w-full">
+        <p className="mb-4 text-sm font-semibold text-muted">
+          タップしてトレーニングを記録しよう
+        </p>
+
+        <header className="grid grid-cols-[44px_1fr_44px] items-center gap-3 border-y border-line py-3">
+          {step === "exercise" ? (
+            <Link
+              href={`/records?date=${encodeURIComponent(workoutDate)}`}
+              aria-label="選択日の記録へ戻る"
+              className="grid size-11 place-items-center rounded-full hover:bg-canvas"
+            >
+              <ArrowLeft aria-hidden="true" size={20} />
+            </Link>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setStep("exercise");
+                setMessage(null);
+              }}
+              aria-label="種目選択へ戻る"
+              className="grid size-11 place-items-center rounded-full hover:bg-canvas"
+            >
+              <ArrowLeft aria-hidden="true" size={20} />
+            </button>
+          )}
+          <div className="min-w-0 text-center">
+            <p className="data-number truncate text-xs text-muted">
+              {isDateKey(workoutDate) ? workoutDate.replaceAll("-", "/") : "日付を選択"}
             </p>
-            <h1 className="mt-1 text-2xl font-black tracking-[-0.04em]">
-              トレーニング記録
+            <h1 className="mt-0.5 truncate text-base font-semibold">
+              {step === "exercise" ? "種目を選択" : selectedExercise?.name ?? "数値を入力"}
             </h1>
           </div>
+          <span aria-hidden="true" />
         </header>
 
         <StorageNotice />
 
-        <form onSubmit={handleSubmit} noValidate className="space-y-5">
-          <section className="surface-panel rounded-[30px] p-5 sm:p-7">
-            <div className="mb-6 flex items-center justify-between gap-4 border-b border-line pb-5">
-              <div>
-                <label htmlFor="workout-date" className="text-xs font-bold text-muted">
+        <form ref={formRef} onSubmit={handleSubmit} noValidate>
+          {step === "exercise" ? (
+            <section className="mt-5" aria-labelledby="exercise-step-title">
+              <div className="flex flex-col items-stretch gap-3 min-[360px]:flex-row min-[360px]:items-center min-[360px]:justify-between">
+                <div>
+                  <p className="text-[10px] font-bold tracking-[0.12em] text-muted uppercase">
+                    Step 1
+                  </p>
+                  <h2
+                    ref={exerciseStepHeadingRef}
+                    id="exercise-step-title"
+                    tabIndex={-1}
+                    className="mt-1 text-lg font-semibold"
+                  >
+                    鍛えた部位と種目
+                  </h2>
+                </div>
+                <label className="text-left text-[10px] font-bold text-muted min-[360px]:text-right">
                   トレーニング日
+                  <input
+                    type="date"
+                    value={workoutDate}
+                    max={today}
+                    onChange={(event) => setWorkoutDate(event.target.value)}
+                    className="mt-1 block min-h-11 w-full rounded-lg border border-line bg-white px-2 text-xs font-bold text-ink min-[360px]:w-auto"
+                    aria-invalid={Boolean(fieldErrors.workoutDate)}
+                    aria-describedby={fieldErrors.workoutDate ? "workout-date-error" : undefined}
+                  />
                 </label>
-                <p className="mt-1 text-lg font-black">
-                  {isDateKey(workoutDate)
-                    ? formatJapaneseDate(workoutDate)
-                    : "日付を選択"}
+              </div>
+              {fieldErrors.workoutDate ? (
+                <p id="workout-date-error" className="mt-2 text-sm font-bold text-accent-strong">
+                  {fieldErrors.workoutDate}
                 </p>
-              </div>
-              <input
-                id="workout-date"
-                type="date"
-                value={workoutDate}
-                max={today}
-                onChange={(event) => setWorkoutDate(event.target.value)}
-                className="min-h-11 rounded-xl border border-line bg-white px-3 text-sm font-bold"
-                aria-invalid={Boolean(fieldErrors.workoutDate)}
-                aria-describedby={fieldErrors.workoutDate ? "workout-date-error" : undefined}
-              />
-            </div>
-            {fieldErrors.workoutDate ? (
-              <p id="workout-date-error" className="-mt-3 mb-4 text-sm font-bold text-accent-strong">
-                {fieldErrors.workoutDate}
-              </p>
-            ) : null}
+              ) : null}
 
-            <fieldset>
-              <legend className="mb-3 text-sm font-black">1. 鍛えた部位</legend>
-              <div className="grid grid-cols-4 gap-2">
-                {BODY_PARTS.map((part) => {
-                  const selected = part === bodyPart;
-                  return (
-                    <label
-                      key={part}
-                      className={`choice-control grid min-h-12 cursor-pointer place-items-center rounded-xl border px-2 py-2 text-sm font-bold transition-colors ${
-                        selected
-                          ? "border-ink bg-ink text-white"
-                          : "border-line bg-white text-muted hover:text-ink"
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="body-part"
-                        value={part}
-                        checked={selected}
-                        onChange={() => selectBodyPart(part)}
-                        className="sr-only"
-                      />
-                      {BODY_PART_LABELS[part]}
+              <fieldset className="mt-5">
+                <legend className="sr-only">鍛えた部位</legend>
+                <div className="grid grid-cols-4 gap-2">
+                  {BODY_PARTS.map((part) => {
+                    const selected = part === bodyPart;
+                    return (
+                      <label
+                        key={part}
+                        className={`choice-control grid min-h-12 cursor-pointer place-items-center rounded-lg border px-1 text-xs font-bold transition-colors ${
+                          selected
+                            ? "border-accent bg-accent text-white"
+                            : "border-line bg-white text-muted hover:border-ink hover:text-ink"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="body-part"
+                          value={part}
+                          checked={selected}
+                          onChange={() => selectBodyPart(part)}
+                          className="sr-only"
+                        />
+                        {BODY_PART_LABELS[part]}
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+
+              <div className="mt-5 flex items-center justify-between gap-3">
+                <p className="text-xs font-bold text-muted">
+                  {BODY_PART_LABELS[bodyPart]}の種目
+                </p>
+                <details className="relative">
+                  <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-full border border-line px-3 text-xs font-bold hover:bg-canvas [&::-webkit-details-marker]:hidden">
+                    <Plus aria-hidden="true" size={15} />
+                    部位・種目を追加
+                  </summary>
+                  <div className="absolute top-13 right-0 z-10 w-[min(82vw,330px)] rounded-xl border border-line bg-white p-4 shadow-xl">
+                    <label htmlFor="new-exercise-name" className="text-xs font-bold">
+                      {BODY_PART_LABELS[bodyPart]}に種目を追加
                     </label>
-                  );
-                })}
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        id="new-exercise-name"
+                        type="text"
+                        value={newExerciseName}
+                        onChange={(event) => {
+                          setNewExerciseName(event.target.value);
+                          setNewExerciseError(null);
+                        }}
+                        placeholder="種目名"
+                        maxLength={60}
+                        className="min-h-11 min-w-0 flex-1 rounded-lg border border-line px-3 text-sm"
+                        aria-invalid={Boolean(newExerciseError)}
+                        aria-describedby={newExerciseError ? "new-exercise-error" : undefined}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddExercise}
+                        className="min-h-11 shrink-0 rounded-lg bg-accent px-4 text-xs font-bold text-white"
+                      >
+                        追加
+                      </button>
+                    </div>
+                    {newExerciseError ? (
+                      <p
+                        id="new-exercise-error"
+                        role="alert"
+                        className="mt-2 text-xs font-bold text-accent-strong"
+                      >
+                        {newExerciseError}
+                      </p>
+                    ) : null}
+                  </div>
+                </details>
               </div>
-            </fieldset>
 
-            <div className="mt-6">
-              <label htmlFor="exercise" className="mb-2 block text-sm font-black">
-                2. 種目
-              </label>
-              <select
-                id="exercise"
-                value={exerciseId}
-                onChange={(event) => setExerciseId(event.target.value)}
-                className="min-h-13 w-full rounded-2xl border border-line bg-white px-4 font-bold"
-                required
-                aria-invalid={Boolean(fieldErrors.exerciseId)}
-                aria-describedby={fieldErrors.exerciseId ? "exercise-error" : undefined}
-              >
-                <option value="">種目を選択</option>
-                {filteredExercises.map((exercise) => (
-                  <option key={exercise.id} value={exercise.id}>
-                    {exercise.name}
-                  </option>
-                ))}
-              </select>
               {fieldErrors.exerciseId ? (
-                <p id="exercise-error" className="mt-2 text-sm font-bold text-accent-strong">
+                <p id="exercise-error" className="mt-3 text-sm font-bold text-accent-strong">
                   {fieldErrors.exerciseId}
                 </p>
               ) : null}
 
-              <details className="mt-3 rounded-2xl border border-dashed border-line bg-canvas/50 px-4 py-3">
-                <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 text-sm font-bold [&::-webkit-details-marker]:hidden">
-                  <Plus aria-hidden="true" size={17} />
-                  未登録の種目を追加
-                </summary>
-                <div className="mt-3 flex gap-2 border-t border-line pt-3">
-                  <input
-                    type="text"
-                    aria-label="追加する種目名"
-                    value={newExerciseName}
-                    onChange={(event) => setNewExerciseName(event.target.value)}
-                    placeholder={`${BODY_PART_LABELS[bodyPart]}の種目名`}
-                    maxLength={60}
-                    className="min-h-11 min-w-0 flex-1 rounded-xl border border-line bg-white px-3 text-sm"
-                  />
+              {filteredExercises.length > 0 ? (
+                <ul className="mt-3 space-y-3">
+                  {filteredExercises.map((exercise) => (
+                    <li key={exercise.id}>
+                      <button
+                        type="button"
+                        onClick={() => selectExercise(exercise.id)}
+                        className="flex min-h-24 w-full items-center justify-between gap-4 rounded-xl border border-line bg-white px-5 py-4 text-left transition-colors hover:border-ink hover:bg-canvas"
+                      >
+                        <span>
+                          <span className="block text-[10px] font-bold text-muted">
+                            {BODY_PART_LABELS[exercise.bodyPart]}
+                          </span>
+                          <span className="mt-1 block font-semibold">{exercise.name}</span>
+                        </span>
+                        <ChevronRight aria-hidden="true" className="shrink-0 text-muted" size={20} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="mt-3 rounded-xl border border-dashed border-line p-8 text-center text-sm text-muted">
+                  この部位の種目はまだありません。上のボタンから追加できます。
+                </div>
+              )}
+
+              {message ? (
+                <p role="status" aria-live="polite" className="mt-4 text-sm font-bold">
+                  {message}
+                </p>
+              ) : null}
+            </section>
+          ) : (
+            <div className="mt-5 space-y-5">
+              <section className="rounded-xl border border-line bg-canvas/35 p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-bold text-accent-strong">
+                      {BODY_PART_LABELS[bodyPart]}
+                    </p>
+                    <h2 className="mt-1 truncate text-lg font-semibold">
+                      {selectedExercise?.name}
+                    </h2>
+                  </div>
                   <button
                     type="button"
-                    onClick={handleAddExercise}
-                    className="min-h-11 shrink-0 rounded-xl bg-ink px-4 text-sm font-black text-white"
+                    onClick={() => setStep("exercise")}
+                    className="min-h-11 shrink-0 rounded-lg border border-line bg-white px-3 text-xs font-bold"
                   >
-                    追加
+                    選び直す
                   </button>
                 </div>
-              </details>
-            </div>
-          </section>
-
-          <section className="surface-panel rounded-[30px] p-5 sm:p-7">
-            <h2 className="mb-5 text-sm font-black">3. 数値を入力</h2>
-            <div className="grid gap-4 sm:grid-cols-3">
-              <div className="block">
-                <label htmlFor="workout-weight" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
-                  <Scale aria-hidden="true" size={15} />
-                  重量
-                </label>
-                <div className="flex overflow-hidden rounded-2xl border border-line bg-white focus-within:border-ink">
+                <label htmlFor="workout-date" className="mt-4 block border-t border-line pt-3 text-xs font-bold text-muted">
+                  トレーニング日
                   <input
-                    id="workout-weight"
-                    type="number"
-                    inputMode="decimal"
-                    min="0"
-                    max="2000"
-                    step="0.1"
-                    value={weight}
-                    onChange={(event) => setWeight(event.target.value)}
-                    className="data-number min-h-14 min-w-0 flex-1 bg-transparent px-4 text-xl font-black outline-none"
-                    aria-invalid={Boolean(fieldErrors.weight)}
-                    aria-describedby={fieldErrors.weight ? "weight-error" : undefined}
+                    id="workout-date"
+                    type="date"
+                    value={workoutDate}
+                    max={today}
+                    onChange={(event) => setWorkoutDate(event.target.value)}
+                    className="mt-2 min-h-12 w-full rounded-lg border border-line bg-white px-3 text-sm font-bold text-ink"
+                    aria-invalid={Boolean(fieldErrors.workoutDate)}
+                    aria-describedby={fieldErrors.workoutDate ? "workout-date-error-details" : undefined}
                   />
-                  <div
-                    className="flex border-l border-line bg-canvas/60 p-1"
-                    role="group"
-                    aria-label="重量単位"
-                  >
-                    {(["kg", "lb"] as const).map((item) => (
-                      <button
-                        key={item}
-                        type="button"
-                        aria-pressed={unit === item}
-                        onClick={() => setUnitOverride(item)}
-                        className={`min-w-10 rounded-lg px-2 text-xs font-black ${
-                          unit === item ? "bg-ink text-white" : "text-muted"
-                        }`}
-                      >
-                        {item}
-                      </button>
-                    ))}
+                </label>
+                {fieldErrors.workoutDate ? (
+                  <p id="workout-date-error-details" className="mt-2 text-sm font-bold text-accent-strong">
+                    {fieldErrors.workoutDate}
+                  </p>
+                ) : null}
+              </section>
+
+              <section aria-labelledby="details-step-title">
+                <div>
+                  <p className="text-[10px] font-bold tracking-[0.12em] text-muted uppercase">
+                    Step 2
+                  </p>
+                  <h2 id="details-step-title" className="mt-1 text-lg font-semibold">
+                    重量・回数・セット数
+                  </h2>
+                </div>
+
+                <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                  <div>
+                    <label htmlFor="workout-weight" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
+                      <Scale aria-hidden="true" size={15} />
+                      重量
+                    </label>
+                    <div className="flex min-h-14 overflow-hidden rounded-xl border border-line bg-white focus-within:border-ink">
+                      <input
+                        id="workout-weight"
+                        type="number"
+                        inputMode="decimal"
+                        min="0"
+                        max="2000"
+                        step="0.1"
+                        value={weight}
+                        onChange={(event) => setWeight(event.target.value)}
+                        className="data-number min-w-0 flex-1 bg-transparent px-3 text-xl font-bold outline-none"
+                        aria-invalid={Boolean(fieldErrors.weight)}
+                        aria-describedby={fieldErrors.weight ? "weight-error" : undefined}
+                      />
+                      <div className="flex border-l border-line bg-canvas/60 p-1" role="group" aria-label="重量単位">
+                        {(["kg", "lb"] as const).map((item) => (
+                          <button
+                            key={item}
+                            type="button"
+                            aria-pressed={unit === item}
+                            onClick={() => setUnitOverride(item)}
+                            className={`min-w-10 rounded-lg px-2 text-xs font-bold ${
+                              unit === item ? "bg-accent text-white" : "text-muted"
+                            }`}
+                          >
+                            {item}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {fieldErrors.weight ? (
+                      <p id="weight-error" className="mt-2 text-xs font-bold text-accent-strong">
+                        {fieldErrors.weight}
+                      </p>
+                    ) : null}
+                  </div>
+
+                  <div>
+                    <label htmlFor="workout-reps" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
+                      <Repeat2 aria-hidden="true" size={15} />
+                      回数
+                    </label>
+                    <div className="flex min-h-14 items-center rounded-xl border border-line bg-white">
+                      <input
+                        id="workout-reps"
+                        type="number"
+                        inputMode="numeric"
+                        min="1"
+                        max="1000"
+                        step="1"
+                        value={reps}
+                        onChange={(event) => setReps(event.target.value)}
+                        className="data-number min-w-0 flex-1 bg-transparent px-4 text-xl font-bold outline-none"
+                        aria-invalid={Boolean(fieldErrors.reps)}
+                        aria-describedby={fieldErrors.reps ? "reps-error" : undefined}
+                      />
+                      <span className="pr-4 text-xs font-bold text-muted">回</span>
+                    </div>
+                    {fieldErrors.reps ? (
+                      <p id="reps-error" className="mt-2 text-xs font-bold text-accent-strong">
+                        {fieldErrors.reps}
+                      </p>
+                    ) : null}
+                  </div>
+
+                  <div>
+                    <label htmlFor="workout-sets" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
+                      <Layers3 aria-hidden="true" size={15} />
+                      セット数
+                    </label>
+                    <div className="flex min-h-14 items-center rounded-xl border border-line bg-white">
+                      <input
+                        id="workout-sets"
+                        type="number"
+                        inputMode="numeric"
+                        min="1"
+                        max="100"
+                        step="1"
+                        value={sets}
+                        onChange={(event) => setSetsOverride(event.target.value)}
+                        className="data-number min-w-0 flex-1 bg-transparent px-4 text-xl font-bold outline-none"
+                        aria-invalid={Boolean(fieldErrors.sets)}
+                        aria-describedby={fieldErrors.sets ? "sets-error" : undefined}
+                      />
+                      <span className="pr-4 text-xs font-bold text-muted">set</span>
+                    </div>
+                    {fieldErrors.sets ? (
+                      <p id="sets-error" className="mt-2 text-xs font-bold text-accent-strong">
+                        {fieldErrors.sets}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
-                {fieldErrors.weight ? (
-                  <span id="weight-error" className="mt-2 block text-xs font-bold text-accent-strong">
-                    {fieldErrors.weight}
-                  </span>
-                ) : null}
-              </div>
 
-              <label className="block">
-                <span className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
-                  <Repeat2 aria-hidden="true" size={15} />
-                  回数
-                </span>
-                <div className="flex min-h-14 items-center rounded-2xl border border-line bg-white">
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min="1"
-                    max="1000"
-                    step="1"
-                    value={reps}
-                    onChange={(event) => setReps(event.target.value)}
-                    className="data-number min-w-0 flex-1 bg-transparent px-4 text-xl font-black outline-none"
-                    aria-invalid={Boolean(fieldErrors.reps)}
-                    aria-describedby={fieldErrors.reps ? "reps-error" : undefined}
+                <label htmlFor="workout-memo" className="mt-5 block">
+                  <span className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
+                    <StickyNote aria-hidden="true" size={15} />
+                    メモ（任意）
+                  </span>
+                  <textarea
+                    id="workout-memo"
+                    value={memo}
+                    onChange={(event) => setMemo(event.target.value)}
+                    rows={3}
+                    maxLength={500}
+                    placeholder="フォームや体調など"
+                    className="w-full resize-y rounded-xl border border-line bg-white px-4 py-3 text-sm leading-6"
+                    aria-invalid={Boolean(fieldErrors.memo)}
+                    aria-describedby={fieldErrors.memo ? "memo-error" : undefined}
                   />
-                  <span className="pr-4 text-xs font-bold text-muted">回</span>
+                  {fieldErrors.memo ? (
+                    <span id="memo-error" className="mt-2 block text-xs font-bold text-accent-strong">
+                      {fieldErrors.memo}
+                    </span>
+                  ) : null}
+                </label>
+              </section>
+
+              <section className="overflow-hidden rounded-xl border border-accent/30 bg-accent-soft">
+                <div className="flex items-center justify-between gap-4 px-5 py-5">
+                  <div>
+                    <p className="text-xs font-bold text-muted">トータルボリューム</p>
+                    <p className="data-number mt-1 text-[clamp(2rem,10vw,3rem)] leading-none font-bold">
+                      {formatVolume(volume)}
+                    </p>
+                  </div>
+                  <Dumbbell aria-hidden="true" className="shrink-0 text-muted" size={32} />
                 </div>
-                {fieldErrors.reps ? (
-                  <span id="reps-error" className="mt-2 block text-xs font-bold text-accent-strong">
-                    {fieldErrors.reps}
-                  </span>
-                ) : null}
-              </label>
-
-              <label className="block">
-                <span className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
-                  <Layers3 aria-hidden="true" size={15} />
-                  セット数
-                </span>
-                <div className="flex min-h-14 items-center rounded-2xl border border-line bg-white">
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min="1"
-                    max="100"
-                    step="1"
-                    value={sets}
-                    onChange={(event) => setSetsOverride(event.target.value)}
-                    className="data-number min-w-0 flex-1 bg-transparent px-4 text-xl font-black outline-none"
-                    aria-invalid={Boolean(fieldErrors.sets)}
-                    aria-describedby={fieldErrors.sets ? "sets-error" : undefined}
-                  />
-                  <span className="pr-4 text-xs font-bold text-muted">set</span>
-                </div>
-                {fieldErrors.sets ? (
-                  <span id="sets-error" className="mt-2 block text-xs font-bold text-accent-strong">
-                    {fieldErrors.sets}
-                  </span>
-                ) : null}
-              </label>
-            </div>
-
-            <label className="mt-5 block">
-              <span className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
-                <StickyNote aria-hidden="true" size={15} />
-                メモ（任意）
-              </span>
-              <textarea
-                value={memo}
-                onChange={(event) => setMemo(event.target.value)}
-                rows={3}
-                maxLength={500}
-                placeholder="フォームや体調など"
-                className="w-full resize-y rounded-2xl border border-line bg-white px-4 py-3 text-sm leading-6"
-                aria-invalid={Boolean(fieldErrors.memo)}
-                aria-describedby={fieldErrors.memo ? "memo-error" : undefined}
-              />
-              {fieldErrors.memo ? (
-                <span id="memo-error" className="mt-2 block text-xs font-bold text-accent-strong">
-                  {fieldErrors.memo}
-                </span>
-              ) : null}
-            </label>
-          </section>
-
-          <section className="overflow-hidden rounded-[30px] border-2 border-ink bg-lime">
-            <div className="flex items-center justify-between gap-4 px-5 py-5 sm:px-7">
-              <div>
-                <p className="text-xs font-black text-ink/65">トータルボリューム</p>
-                <p className="data-number mt-1 text-[clamp(2rem,10vw,3.5rem)] leading-none font-black">
-                  {formatVolume(volume)}
+                <p className="border-t border-ink/15 px-5 py-3 text-xs font-bold text-muted">
+                  重量 × 回数 × セット数をkgへ換算して自動計算
                 </p>
-              </div>
-              <Dumbbell aria-hidden="true" className="shrink-0 text-ink/70" size={34} />
+              </section>
+
+              {message ? (
+                <p role="status" aria-live="polite" className="rounded-xl border border-line bg-white px-4 py-3 text-sm font-bold">
+                  {message}
+                </p>
+              ) : null}
+
+              <button
+                type="submit"
+                disabled={!isReady || isSubmitting}
+                className="flex min-h-14 w-full items-center justify-center gap-2 rounded-xl bg-accent px-6 py-4 text-base font-bold text-white shadow-[0_6px_0_var(--accent-shadow)] active:translate-y-1 active:shadow-none disabled:cursor-wait disabled:bg-line disabled:text-muted disabled:shadow-none"
+              >
+                <Check aria-hidden="true" size={20} strokeWidth={3} />
+                {isSubmitting ? "保存しています" : "この記録を保存"}
+              </button>
             </div>
-            <p className="border-t border-ink/20 px-5 py-3 text-xs font-bold text-ink/65 sm:px-7">
-              重量 × 回数 × セット数をkgへ換算して計算
-            </p>
-          </section>
-
-          {message ? (
-            <p
-              role="status"
-              aria-live="polite"
-              className="rounded-2xl border border-line bg-surface px-4 py-3 text-sm font-bold"
-            >
-              {message}
-            </p>
-          ) : null}
-
-          <button
-            type="submit"
-            disabled={!isReady || isSubmitting}
-            className="flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-accent-strong px-6 py-4 text-lg font-black text-white shadow-[0_7px_0_var(--accent-shadow)] transition-transform hover:-translate-y-0.5 active:translate-y-1 active:shadow-none disabled:cursor-wait disabled:bg-line disabled:text-muted disabled:shadow-none"
-          >
-            <Check aria-hidden="true" size={21} strokeWidth={3} />
-            {isSubmitting ? "保存しています" : "この記録を保存"}
-          </button>
+          )}
         </form>
       </div>
     </main>

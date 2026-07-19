@@ -19,10 +19,12 @@ export default async function RecordsPage({
   const candidate = typeof params.date === "string" ? params.date : "";
   const today = dateKeyInTimeZone();
   const initialDate = isDateKey(candidate) && candidate <= today ? candidate : today;
+  const initialView = isDateKey(candidate) && candidate <= today ? "day" : "calendar";
 
   return (
     <RecordsDashboard
       initialDate={initialDate}
+      initialView={initialView}
       showSavedMessage={params.saved === "1"}
     />
   );
