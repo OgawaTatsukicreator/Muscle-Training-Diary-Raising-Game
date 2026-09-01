@@ -1,0 +1,12 @@
+- generic [active] [ref=f1e1]:
+  - main "読み込み中" [ref=f1e2]:
+    - generic [ref=f1e7]: 読み込んでいます
+  - navigation "メインナビゲーション" [ref=f1e8]:
+    - generic [ref=f1e9]:
+      - link "マソ君" [ref=f1e10] [cursor=pointer]:
+        - /url: /
+      - link "記録" [ref=f1e16] [cursor=pointer]:
+        - /url: /records
+      - link "履歴分析" [ref=f1e21] [cursor=pointer]:
+        - /url: /analytics
+  - button "Open Next.js Dev Tools" [ref=f1e31] [cursor=pointer]

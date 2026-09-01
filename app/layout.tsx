@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 
-import { ConditionalBottomNavigation } from "@/components/navigation/bottom-navigation";
+import { ConditionalBottomNavigation } from "@/components/home/navigation/bottom-navigation";
 import { DemoDataProvider } from "@/components/providers/demo-data-provider";
 
 import "./globals.css";

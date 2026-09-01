@@ -8,6 +8,8 @@ import {
 } from "@/lib/domain/workout";
 import {
   applyExperience,
+  masoImageForLevel,
+  masoPhaseForLevel,
   rewardsFromVolume,
 } from "@/lib/domain/growth";
 
@@ -51,9 +53,25 @@ describe("workout calculations", () => {
 });
 
 describe("growth calculations", () => {
+  it("maps mascot levels to the 50 available body phases", () => {
+    expect(masoPhaseForLevel(1)).toBe(1);
+    expect(masoPhaseForLevel(25)).toBe(25);
+    expect(masoPhaseForLevel(50)).toBe(50);
+    expect(masoPhaseForLevel(999)).toBe(50);
+    expect(masoPhaseForLevel(0)).toBe(1);
+    expect(masoPhaseForLevel(Number.NaN)).toBe(1);
+  });
+
+  it("builds the matching zero-padded mascot image path", () => {
+    expect(masoImageForLevel(1)).toBe("/maso/phases-50/phase-01.svg");
+    expect(masoImageForLevel(9)).toBe("/maso/phases-50/phase-09.svg");
+    expect(masoImageForLevel(50)).toBe("/maso/phases-50/phase-50.svg");
+    expect(masoImageForLevel(51)).toBe("/maso/phases-50/phase-50.svg");
+  });
+
   it("converts volume at the configured boundaries", () => {
-    expect(rewardsFromVolume(499)).toEqual({ growthPoints: 4, food: 0 });
-    expect(rewardsFromVolume(500)).toEqual({ growthPoints: 5, food: 1 });
+    expect(rewardsFromVolume(499)).toEqual({ growthPoints: 4 });
+    expect(rewardsFromVolume(500)).toEqual({ growthPoints: 5 });
   });
 
   it("carries experience across multiple levels", () => {

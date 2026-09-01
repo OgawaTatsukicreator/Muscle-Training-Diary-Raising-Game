@@ -16,8 +16,9 @@ import { DEFAULT_EXERCISES } from "@/lib/data/default-exercises";
 import { dateKeyInTimeZone } from "@/lib/domain/date";
 import {
   applyExperience,
-  EXPERIENCE_PER_FOOD,
+  FOOD_ITEMS,
   rewardsFromVolume,
+  type FoodKind,
 } from "@/lib/domain/growth";
 import {
   calculateVolumeKg,
@@ -44,6 +45,7 @@ const masoStatusSchema = z
     experience: z.number().int().min(0).max(99_900),
     growthPoints: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     food: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    protein: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
   })
   .strict();
 
@@ -74,7 +76,11 @@ type DemoDataContextValue = DemoDataState & {
   ) => ActionResult<WorkoutRecord>;
   addExercise: (name: string, bodyPart: BodyPart) => ActionResult<Exercise>;
   updateSettings: (settings: UserSettings) => ActionResult<UserSettings>;
-  feedMaso: (amount?: number) => ActionResult<MasoStatus>;
+  exchangeGrowthPoints: (
+    kind: FoodKind,
+    amount?: number,
+  ) => ActionResult<MasoStatus>;
+  feedMaso: (kind: FoodKind, amount?: number) => ActionResult<MasoStatus>;
   renameMaso: (name: string) => ActionResult<MasoStatus>;
   clearLocalData: () => ActionResult<null>;
 };
@@ -90,6 +96,7 @@ const initialState: DemoDataState = {
     experience: 0,
     growthPoints: 0,
     food: 0,
+    protein: 0,
   },
 };
 
@@ -240,9 +247,8 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
       };
       const rewards = rewardsFromVolume(volumeKg);
       const nextGrowthPoints = state.maso.growthPoints + rewards.growthPoints;
-      const nextFood = state.maso.food + rewards.food;
 
-      if (!Number.isSafeInteger(nextGrowthPoints) || !Number.isSafeInteger(nextFood)) {
+      if (!Number.isSafeInteger(nextGrowthPoints)) {
         return {
           ok: false,
           message: "育成値が保存可能な上限を超えるため、この記録は保存できません。",
@@ -264,7 +270,6 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
           maso: {
             ...current.maso,
             growthPoints: current.maso.growthPoints + rewards.growthPoints,
-            food: current.maso.food + rewards.food,
           },
         };
       });
@@ -273,7 +278,6 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
     },
     [
       state.exercises,
-      state.maso.food,
       state.maso.growthPoints,
       state.records,
     ],
@@ -350,28 +354,67 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const exchangeGrowthPoints = useCallback(
+    (kind: FoodKind, amount = 1): ActionResult<MasoStatus> => {
+      if (!canPersistRef.current) {
+        return { ok: false, message: "保存データを確認できないため、交換できません。" };
+      }
+
+      const exchangeAmount = Math.floor(amount);
+      const item = FOOD_ITEMS[kind];
+      const totalCost = exchangeAmount * item.growthPointCost;
+
+      if (
+        exchangeAmount < 1 ||
+        !Number.isSafeInteger(totalCost) ||
+        state.maso.growthPoints < totalCost
+      ) {
+        return { ok: false, message: "育成ポイントが足りません。" };
+      }
+
+      const inventoryKey = kind === "onigiri" ? "food" : "protein";
+      const nextInventory = state.maso[inventoryKey] + exchangeAmount;
+
+      if (!Number.isSafeInteger(nextInventory)) {
+        return { ok: false, message: "これ以上アイテムを所持できません。" };
+      }
+
+      const nextMaso = {
+        ...state.maso,
+        growthPoints: state.maso.growthPoints - totalCost,
+        [inventoryKey]: nextInventory,
+      };
+
+      setState((current) => ({ ...current, maso: nextMaso }));
+      return { ok: true, data: nextMaso };
+    },
+    [state.maso],
+  );
+
   const feedMaso = useCallback(
-    (amount = 1): ActionResult<MasoStatus> => {
+    (kind: FoodKind, amount = 1): ActionResult<MasoStatus> => {
       if (!canPersistRef.current) {
         return { ok: false, message: "保存データを確認できないため、エサを使えません。" };
       }
 
       const useAmount = Math.floor(amount);
+      const inventoryKey = kind === "onigiri" ? "food" : "protein";
+      const item = FOOD_ITEMS[kind];
 
-      if (useAmount < 1 || state.maso.food < useAmount) {
-        return { ok: false, message: "エサが足りません。記録すると獲得できます。" };
+      if (useAmount < 1 || state.maso[inventoryKey] < useAmount) {
+        return { ok: false, message: `${item.name}が足りません。育成ポイントと交換できます。` };
       }
 
       const nextExperience = applyExperience(
         state.maso.level,
         state.maso.experience,
-        useAmount * EXPERIENCE_PER_FOOD,
+        useAmount * item.experience,
       );
       const nextMaso = {
         ...state.maso,
         level: nextExperience.level,
         experience: nextExperience.experience,
-        food: state.maso.food - useAmount,
+        [inventoryKey]: state.maso[inventoryKey] - useAmount,
       };
 
       setState((current) => ({ ...current, maso: nextMaso }));
@@ -420,6 +463,7 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
       addWorkout,
       addExercise,
       updateSettings,
+      exchangeGrowthPoints,
       feedMaso,
       renameMaso,
       clearLocalData,
@@ -428,6 +472,7 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
       addExercise,
       addWorkout,
       clearLocalData,
+      exchangeGrowthPoints,
       feedMaso,
       isReady,
       renameMaso,

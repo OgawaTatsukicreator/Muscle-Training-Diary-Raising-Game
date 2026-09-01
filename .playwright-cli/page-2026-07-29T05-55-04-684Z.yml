@@ -1,0 +1,40 @@
+- generic [active] [ref=f5e1]:
+  - main [ref=f5e2]:
+    - region [ref=f5e4]:
+      - generic [ref=f5e5]:
+        - generic [ref=f5e6]:
+          - paragraph [ref=f5e7]: 7月29日(水)
+          - heading "筋トレMEMO" [level=1] [ref=f5e8]
+        - generic [ref=f5e9]:
+          - generic [ref=f5e10]: LEVEL
+          - text: "2"
+      - generic [ref=f5e11]:
+        - generic [ref=f5e12]:
+          - term [ref=f5e13]: 育成ポイント
+          - definition [ref=f5e14]: "0"
+        - generic [ref=f5e15]:
+          - term [ref=f5e16]: エサ
+          - definition [ref=f5e17]: "0"
+        - generic [ref=f5e18]:
+          - term [ref=f5e19]: 今日の種目
+          - definition [ref=f5e20]: "0"
+      - generic [ref=f5e21]:
+        - generic [ref=f5e22]:
+          - generic [ref=f5e23]: マソ君の経験値
+          - generic [ref=f5e24]: 5 / 200 XP
+        - progressbar "マソ君の経験値" [ref=f5e25]
+      - generic [ref=f5e27]:
+        - paragraph [ref=f5e29]: 今日も一緒に頑張ろう
+        - img "レベル2のマソ君・体フェーズ2" [ref=f5e31]
+        - button "メニュー" [ref=f5e32]
+        - button "エサやり" [ref=f5e34]
+  - navigation "メインナビゲーション" [ref=f5e39]:
+    - generic [ref=f5e40]:
+      - link "マソ君" [ref=f5e41] [cursor=pointer]:
+        - /url: /
+      - link "記録" [ref=f5e47] [cursor=pointer]:
+        - /url: /records
+      - link "履歴分析" [ref=f5e52] [cursor=pointer]:
+        - /url: /analytics
+  - button "Open Next.js Dev Tools" [ref=f5e62] [cursor=pointer]
+  - alert [ref=f5e66]

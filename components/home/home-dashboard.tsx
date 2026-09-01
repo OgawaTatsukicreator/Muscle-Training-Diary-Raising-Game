@@ -2,9 +2,12 @@
 
 import {
   Beef,
+  ChevronLeft,
   LogIn,
   Menu,
+  Minus,
   PencilLine,
+  Plus,
   RotateCcw,
   X,
 } from "lucide-react";
@@ -15,14 +18,23 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { StorageNotice } from "@/components/common/storage-notice";
 import { useDemoData } from "@/components/providers/demo-data-provider";
 import { formatJapaneseDate } from "@/lib/domain/date";
-import { requiredExperienceForLevel } from "@/lib/domain/growth";
+import {
+  FOOD_ITEMS,
+  masoImageForLevel,
+  masoPhaseForLevel,
+  requiredExperienceForLevel,
+  type FoodKind,
+} from "@/lib/domain/growth";
 
 type HomePanel = "feed" | "menu" | null;
+type FeedStep = "select" | "confirm";
+type FeedMode = "exchange" | "feed";
 
 export function HomeDashboard({ today }: { today: string }) {
   const {
     records,
     maso,
+    exchangeGrowthPoints,
     feedMaso,
     renameMaso,
     clearLocalData,
@@ -31,10 +43,19 @@ export function HomeDashboard({ today }: { today: string }) {
   const panelDialogRef = useRef<HTMLDialogElement>(null);
   const clearButtonRef = useRef<HTMLButtonElement>(null);
   const returnFocusToClearRef = useRef(false);
+  const previousLevelRef = useRef(maso.level);
+  const hasObservedReadyLevelRef = useRef(false);
+  const levelUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [panel, setPanel] = useState<HomePanel>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [nameOverride, setNameOverride] = useState<string | null>(null);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
+  const [levelUpLevel, setLevelUpLevel] = useState<number | null>(null);
+  const [feedStep, setFeedStep] = useState<FeedStep>("select");
+  const [feedMode, setFeedMode] = useState<FeedMode>("exchange");
+  const [selectedFoodKind, setSelectedFoodKind] =
+    useState<FoodKind>("onigiri");
+  const [feedAmount, setFeedAmount] = useState(1);
   const name = nameOverride ?? maso.name;
   const todayRecords = useMemo(
     () => records.filter((record) => record.workoutDate === today),
@@ -42,6 +63,12 @@ export function HomeDashboard({ today }: { today: string }) {
   );
   const requiredExperience = requiredExperienceForLevel(maso.level);
   const progress = Math.min(100, (maso.experience / requiredExperience) * 100);
+  const masoPhase = masoPhaseForLevel(maso.level);
+  const masoImage = masoImageForLevel(maso.level);
+  const selectedFood = FOOD_ITEMS[selectedFoodKind];
+  const selectedFoodBalance =
+    selectedFoodKind === "onigiri" ? maso.food : maso.protein;
+  const totalFood = maso.food + maso.protein;
 
   useEffect(() => {
     const dialog = panelDialogRef.current;
@@ -57,6 +84,41 @@ export function HomeDashboard({ today }: { today: string }) {
       returnFocusToClearRef.current = false;
     }
   }, [isConfirmingClear]);
+
+  useEffect(() => {
+    if (!isReady) {
+      return;
+    }
+
+    if (!hasObservedReadyLevelRef.current) {
+      previousLevelRef.current = maso.level;
+      hasObservedReadyLevelRef.current = true;
+      return;
+    }
+
+    if (maso.level > previousLevelRef.current) {
+      if (levelUpTimerRef.current) {
+        clearTimeout(levelUpTimerRef.current);
+      }
+
+      setLevelUpLevel(maso.level);
+      levelUpTimerRef.current = setTimeout(() => {
+        setLevelUpLevel(null);
+        levelUpTimerRef.current = null;
+      }, 1600);
+    }
+
+    previousLevelRef.current = maso.level;
+  }, [isReady, maso.level]);
+
+  useEffect(
+    () => () => {
+      if (levelUpTimerRef.current) {
+        clearTimeout(levelUpTimerRef.current);
+      }
+    },
+    [],
+  );
 
   function closePanel() {
     const dialog = panelDialogRef.current;
@@ -77,11 +139,68 @@ export function HomeDashboard({ today }: { today: string }) {
     setPanel(nextPanel);
     setMessage(null);
     setIsConfirmingClear(false);
+
+    if (nextPanel === "feed") {
+      setFeedMode(totalFood > 0 ? "feed" : "exchange");
+      setFeedStep("select");
+      setFeedAmount(1);
+    }
   }
 
   function handleFeed() {
-    const result = feedMaso(1);
-    setMessage(result.ok ? "もぐもぐ。経験値が10増えました。" : result.message);
+    const result = feedMaso(selectedFoodKind, feedAmount);
+    const didLevelUp = result.ok && result.data.level > maso.level;
+
+    setMessage(
+      result.ok
+        ? didLevelUp
+          ? `レベル${result.data.level}になりました！`
+          : `もぐもぐ。${selectedFood.name}を${feedAmount}個あげて、経験値が${feedAmount * selectedFood.experience}増えました。`
+        : result.message,
+    );
+
+    if (didLevelUp) {
+      closePanel();
+    } else if (result.ok) {
+      setFeedStep("select");
+      const nextBalance =
+        selectedFoodKind === "onigiri" ? result.data.food : result.data.protein;
+      setFeedAmount(Math.max(1, Math.min(feedAmount, nextBalance)));
+    }
+  }
+
+  function changeFeedAmount(nextAmount: number) {
+    if (selectedFoodBalance < 1) {
+      setFeedAmount(1);
+      return;
+    }
+
+    setFeedAmount(
+      Math.min(selectedFoodBalance, Math.max(1, Math.floor(nextAmount))),
+    );
+    setMessage(null);
+  }
+
+  function chooseFood(kind: FoodKind) {
+    setSelectedFoodKind(kind);
+    setFeedAmount(1);
+    setFeedStep("select");
+    setMessage(null);
+  }
+
+  function handleExchange(kind: FoodKind) {
+    const item = FOOD_ITEMS[kind];
+    const result = exchangeGrowthPoints(kind);
+
+    setMessage(
+      result.ok
+        ? `${item.name}1個と交換しました。`
+        : result.message,
+    );
+
+    if (result.ok) {
+      setSelectedFoodKind(kind);
+    }
   }
 
   function handleRename(event: FormEvent<HTMLFormElement>) {
@@ -145,9 +264,9 @@ export function HomeDashboard({ today }: { today: string }) {
               </dd>
             </div>
             <div className="px-3 text-center">
-              <dt className="text-[10px] font-bold text-muted">エサ</dt>
+              <dt className="text-[10px] font-bold text-muted">アイテム</dt>
               <dd className="data-number mt-1 text-base font-bold">
-                {maso.food.toLocaleString("ja-JP")}
+                {totalFood.toLocaleString("ja-JP")}
               </dd>
             </div>
             <div className="px-3 text-center">
@@ -186,14 +305,29 @@ export function HomeDashboard({ today }: { today: string }) {
               {panel === null && message ? message : "今日も一緒に頑張ろう"}
             </p>
 
-            <Image
-              className="maso-float relative z-[2] mt-16 h-auto w-[62%] max-w-[310px]"
-              src="/maso/maso-level-1.svg"
-              alt={`レベル${maso.level}の${maso.name}`}
-              width={320}
-              height={320}
-              preload
-            />
+            <div
+              className={`maso-character relative z-[2] w-[62%] max-w-[310px] ${
+                levelUpLevel !== null ? "is-leveling-up" : ""
+              }`}
+            >
+              <Image
+                className="maso-character-image h-auto w-full"
+                src={masoImage}
+                alt={`レベル${maso.level}の${maso.name}・体フェーズ${masoPhase}`}
+                width={320}
+                height={480}
+                preload
+              />
+              <span className="maso-eye maso-eye--left" aria-hidden="true" />
+              <span className="maso-eye maso-eye--right" aria-hidden="true" />
+              <span className="maso-level-up-ring" aria-hidden="true" />
+              {levelUpLevel !== null ? (
+                <span className="maso-level-up-label" role="status">
+                  <strong>LEVEL UP</strong>
+                  <small>レベル {levelUpLevel}</small>
+                </span>
+              ) : null}
+            </div>
 
             <button
               type="button"
@@ -252,19 +386,228 @@ export function HomeDashboard({ today }: { today: string }) {
                     <X aria-hidden="true" size={18} />
                   </button>
                 </div>
-                <div className="mt-4 flex items-center justify-between rounded-xl border border-ink/15 bg-white/35 px-4 py-3">
-                  <span className="text-xs font-bold">持っているエサ</span>
-                  <span className="data-number text-xl font-bold">{maso.food} 個</span>
+                <div className="mt-4 grid grid-cols-2 rounded-xl bg-canvas p-1">
+                  {(["exchange", "feed"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => {
+                        setFeedMode(mode);
+                        setFeedStep("select");
+                        setFeedAmount(1);
+                        setMessage(null);
+                      }}
+                      aria-pressed={feedMode === mode}
+                      className={`min-h-11 rounded-lg text-xs font-bold ${
+                        feedMode === mode
+                          ? "bg-white text-ink shadow-sm"
+                          : "text-muted"
+                      }`}
+                    >
+                      {mode === "exchange" ? "アイテム交換" : "エサをあげる"}
+                    </button>
+                  ))}
                 </div>
-                <button
-                  type="button"
-                  onClick={handleFeed}
-                  disabled={maso.food < 1}
-                  className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-accent px-5 font-bold text-white disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
-                >
-                  <Beef aria-hidden="true" size={19} />
-                  {maso.food > 0 ? "エサを1個あげる" : "記録してエサを獲得"}
-                </button>
+
+                {feedMode === "exchange" ? (
+                  <>
+                    <div className="mt-4 flex items-center justify-between rounded-xl border border-ink/15 bg-white/35 px-4 py-3">
+                      <span className="text-xs font-bold">使える育成ポイント</span>
+                      <span className="data-number text-xl font-bold">
+                        {maso.growthPoints.toLocaleString("ja-JP")} pt
+                      </span>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {(Object.keys(FOOD_ITEMS) as FoodKind[]).map((kind) => {
+                        const item = FOOD_ITEMS[kind];
+                        const balance = kind === "onigiri" ? maso.food : maso.protein;
+                        const canExchange =
+                          maso.growthPoints >= item.growthPointCost;
+
+                        return (
+                          <div
+                            key={kind}
+                            className="rounded-xl border border-ink/15 bg-white/45 p-4"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="font-bold">{item.name}</p>
+                                <p className="mt-1 text-xs text-muted">
+                                  1個で +{item.experience} XP
+                                </p>
+                                <p className="mt-1 text-[11px] font-bold text-muted">
+                                  所持 {balance}個
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleExchange(kind)}
+                                disabled={!canExchange}
+                                className="min-h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
+                              >
+                                {item.growthPointCost} ptで交換
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-3 text-center text-[11px] text-muted">
+                      トレーニング記録で育成ポイントが増えます。
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <fieldset className="mt-4">
+                      <legend className="text-xs font-bold">あげるアイテム</legend>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        {(Object.keys(FOOD_ITEMS) as FoodKind[]).map((kind) => {
+                          const item = FOOD_ITEMS[kind];
+                          const balance = kind === "onigiri" ? maso.food : maso.protein;
+
+                          return (
+                            <button
+                              key={kind}
+                              type="button"
+                              onClick={() => chooseFood(kind)}
+                              aria-pressed={selectedFoodKind === kind}
+                              className={`min-h-16 rounded-xl border px-3 text-left ${
+                                selectedFoodKind === kind
+                                  ? "border-accent bg-white"
+                                  : "border-ink/15 bg-white/35"
+                              }`}
+                            >
+                              <span className="block text-sm font-bold">{item.name}</span>
+                              <span className="mt-1 block text-[11px] text-muted">
+                                所持 {balance}個・+{item.experience} XP
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </fieldset>
+
+                    <div className="mt-3 flex items-center gap-2 text-[11px] font-bold">
+                      <span className={`rounded-full px-3 py-1 ${feedStep === "select" ? "bg-accent text-white" : "bg-canvas text-muted"}`}>
+                        1. 個数選択
+                      </span>
+                      <span aria-hidden="true" className="h-px flex-1 bg-line" />
+                      <span className={`rounded-full px-3 py-1 ${feedStep === "confirm" ? "bg-accent text-white" : "bg-canvas text-muted"}`}>
+                        2. 内容確認
+                      </span>
+                    </div>
+
+                {feedStep === "select" ? (
+                  <>
+                    <fieldset className="mt-4">
+                      <legend className="text-xs font-bold">あげる個数</legend>
+                      <div className="mt-2 grid grid-cols-[48px_1fr_48px] gap-2">
+                        <button
+                          type="button"
+                          onClick={() => changeFeedAmount(feedAmount - 1)}
+                          disabled={selectedFoodBalance < 1 || feedAmount <= 1}
+                          aria-label="エサを1個減らす"
+                          className="grid min-h-12 place-items-center rounded-xl border border-ink/25 bg-white disabled:cursor-not-allowed disabled:opacity-35"
+                        >
+                          <Minus aria-hidden="true" size={18} />
+                        </button>
+                        <label className="relative">
+                          <span className="sr-only">あげるエサの個数</span>
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            min={1}
+                            max={Math.max(1, selectedFoodBalance)}
+                            value={selectedFoodBalance > 0 ? feedAmount : 0}
+                            onChange={(event) =>
+                              changeFeedAmount(Number(event.target.value))
+                            }
+                            disabled={selectedFoodBalance < 1}
+                            className="data-number min-h-12 w-full rounded-xl border border-ink/25 bg-white px-10 text-center text-xl font-bold disabled:bg-canvas disabled:text-muted"
+                          />
+                          <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-xs font-bold text-muted">
+                            個
+                          </span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => changeFeedAmount(feedAmount + 1)}
+                          disabled={selectedFoodBalance < 1 || feedAmount >= selectedFoodBalance}
+                          aria-label="エサを1個増やす"
+                          className="grid min-h-12 place-items-center rounded-xl border border-ink/25 bg-white disabled:cursor-not-allowed disabled:opacity-35"
+                        >
+                          <Plus aria-hidden="true" size={18} />
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => changeFeedAmount(selectedFoodBalance)}
+                        disabled={selectedFoodBalance < 1 || feedAmount === selectedFoodBalance}
+                        className="mt-2 min-h-11 w-full rounded-xl border border-ink/25 bg-white text-xs font-bold disabled:cursor-not-allowed disabled:opacity-35"
+                      >
+                        持っている{selectedFood.name}を全部選ぶ
+                      </button>
+                    </fieldset>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFeedStep("confirm");
+                        setMessage(null);
+                      }}
+                      disabled={selectedFoodBalance < 1}
+                      className="mt-4 flex min-h-12 w-full items-center justify-center rounded-xl bg-accent px-5 font-bold text-white disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
+                    >
+                      {selectedFoodBalance > 0 ? "この個数で確認" : "交換してからあげる"}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <dl className="mt-4 divide-y divide-line rounded-xl border border-ink/15 bg-white/45 px-4">
+                      <div className="flex items-center justify-between py-3">
+                        <dt className="text-xs font-bold text-muted">あげる個数</dt>
+                        <dd className="data-number text-lg font-bold">
+                          {feedAmount} 個
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between py-3">
+                        <dt className="text-xs font-bold text-muted">獲得経験値</dt>
+                        <dd className="data-number text-lg font-bold">
+                          +{feedAmount * selectedFood.experience} XP
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between py-3">
+                        <dt className="text-xs font-bold text-muted">使用後の残り</dt>
+                        <dd className="data-number text-lg font-bold">
+                          {Math.max(0, selectedFoodBalance - feedAmount)} 個
+                        </dd>
+                      </div>
+                    </dl>
+                    <div className="mt-4 grid grid-cols-[1fr_1.35fr] gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFeedStep("select");
+                          setMessage(null);
+                        }}
+                        className="flex min-h-12 items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-ink/25 bg-white px-2 text-[11px] font-bold"
+                      >
+                        <ChevronLeft aria-hidden="true" size={17} />
+                        個数を変更
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleFeed}
+                        className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-accent px-3 text-sm font-bold text-white"
+                      >
+                        <Beef aria-hidden="true" size={18} />
+                        {selectedFood.name}を{feedAmount}個あげる
+                      </button>
+                    </div>
+                  </>
+                )}
+                  </>
+                )}
                 {message ? (
                   <p aria-live="polite" className="mt-3 text-center text-xs font-bold">
                     {message}

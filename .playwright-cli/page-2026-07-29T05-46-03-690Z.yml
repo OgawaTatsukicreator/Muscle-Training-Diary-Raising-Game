@@ -1,0 +1,51 @@
+- generic [ref=f2e1]:
+  - main [ref=f2e2]:
+    - region [ref=f2e4]:
+      - generic [ref=f2e5]:
+        - generic [ref=f2e6]:
+          - paragraph [ref=f2e7]: 7月29日(水)
+          - heading "筋トレMEMO" [level=1] [ref=f2e8]
+        - generic [ref=f2e9]:
+          - generic [ref=f2e10]: LEVEL
+          - text: "1"
+      - generic [ref=f2e11]:
+        - generic [ref=f2e12]:
+          - term [ref=f2e13]: 育成ポイント
+          - definition [ref=f2e14]: "0"
+        - generic [ref=f2e15]:
+          - term [ref=f2e16]: エサ
+          - definition [ref=f2e17]: "1"
+        - generic [ref=f2e18]:
+          - term [ref=f2e19]: 今日の種目
+          - definition [ref=f2e20]: "0"
+      - generic [ref=f2e21]:
+        - generic [ref=f2e22]:
+          - generic [ref=f2e23]: マソ君の経験値
+          - generic [ref=f2e24]: 95 / 100 XP
+        - progressbar "マソ君の経験値" [ref=f2e25]
+      - generic [ref=f2e27]:
+        - paragraph [ref=f2e29]: 今日も一緒に頑張ろう
+        - img "レベル1のマソ君・体フェーズ1" [ref=f2e31]
+        - button "メニュー" [ref=f2e32]
+        - button "エサやり" [expanded] [ref=f2e34]
+        - dialog [ref=f2e67]:
+          - generic [ref=f2e68]:
+            - generic [ref=f2e69]:
+              - generic [ref=f2e70]:
+                - paragraph [ref=f2e71]: エサやり
+                - heading "マソ君にエサをあげる" [level=2] [ref=f2e72]
+              - button "エサやりを閉じる" [active] [ref=f2e73]
+            - generic [ref=f2e77]:
+              - generic [ref=f2e78]: 持っているエサ
+              - generic [ref=f2e79]: 1 個
+            - button "エサを1個あげる" [ref=f2e80]
+  - navigation "メインナビゲーション" [ref=f2e39]:
+    - generic [ref=f2e40]:
+      - link "マソ君" [ref=f2e41] [cursor=pointer]:
+        - /url: /
+      - link "記録" [ref=f2e47] [cursor=pointer]:
+        - /url: /records
+      - link "履歴分析" [ref=f2e52] [cursor=pointer]:
+        - /url: /analytics
+  - button "Open Next.js Dev Tools" [ref=f2e62] [cursor=pointer]
+  - alert [ref=f2e66]

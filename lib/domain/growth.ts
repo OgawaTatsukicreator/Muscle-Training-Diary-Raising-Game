@@ -1,19 +1,45 @@
 export const GROWTH_POINT_VOLUME_STEP_KG = 100;
-export const FOOD_VOLUME_STEP_KG = 500;
 export const EXPERIENCE_PER_FOOD = 10;
 export const MAX_MASO_LEVEL = 999;
+export const MAX_MASO_PHASE = 50;
+
+export const FOOD_ITEMS = {
+  onigiri: {
+    name: "おにぎり",
+    growthPointCost: 5,
+    experience: 10,
+  },
+  protein: {
+    name: "プロテイン",
+    growthPointCost: 15,
+    experience: 30,
+  },
+} as const;
+
+export type FoodKind = keyof typeof FOOD_ITEMS;
+
+export function masoPhaseForLevel(level: number): number {
+  if (!Number.isFinite(level)) {
+    return 1;
+  }
+
+  return Math.min(MAX_MASO_PHASE, Math.max(1, Math.floor(level)));
+}
+
+export function masoImageForLevel(level: number): string {
+  const phase = masoPhaseForLevel(level);
+  return `/maso/phases-50/phase-${String(phase).padStart(2, "0")}.svg`;
+}
 
 export function rewardsFromVolume(volumeKg: number): {
   growthPoints: number;
-  food: number;
 } {
   if (!Number.isFinite(volumeKg) || volumeKg <= 0) {
-    return { growthPoints: 0, food: 0 };
+    return { growthPoints: 0 };
   }
 
   return {
     growthPoints: Math.floor(volumeKg / GROWTH_POINT_VOLUME_STEP_KG),
-    food: Math.floor(volumeKg / FOOD_VOLUME_STEP_KG),
   };
 }
 
