@@ -16,10 +16,11 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { StorageNotice } from "@/components/common/storage-notice";
-import { useDemoData } from "@/components/providers/demo-data-provider";
+import { useAppData } from "@/components/providers/app-data-provider";
 import { formatJapaneseDate } from "@/lib/domain/date";
 import {
   FOOD_ITEMS,
+  MAX_ITEM_ACTION_AMOUNT,
   masoImageForLevel,
   masoPhaseForLevel,
   requiredExperienceForLevel,
@@ -30,24 +31,45 @@ type HomePanel = "feed" | "menu" | null;
 type FeedStep = "select" | "confirm";
 type FeedMode = "exchange" | "feed";
 
+function requestIdFor(pending: Map<string, string>, payload: string): string {
+  const existing = pending.get(payload);
+  if (existing) {
+    return existing;
+  }
+
+  const requestId = crypto.randomUUID();
+  pending.set(payload, requestId);
+  return requestId;
+}
+
 export function HomeDashboard({ today }: { today: string }) {
   const {
+    profile,
     records,
     maso,
     exchangeGrowthPoints,
     feedMaso,
     renameMaso,
+    updateProfile,
     clearLocalData,
     isReady,
-  } = useDemoData();
+    storageMode,
+  } = useAppData();
   const panelDialogRef = useRef<HTMLDialogElement>(null);
   const clearButtonRef = useRef<HTMLButtonElement>(null);
+  const mutatingRef = useRef(false);
+  const pendingExchangeIdsRef = useRef(new Map<string, string>());
+  const pendingFeedIdsRef = useRef(new Map<string, string>());
   const returnFocusToClearRef = useRef(false);
   const previousLevelRef = useRef(maso.level);
   const hasObservedReadyLevelRef = useRef(false);
   const levelUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [panel, setPanel] = useState<HomePanel>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [isMutating, setIsMutating] = useState(false);
+  const [profileNameOverride, setProfileNameOverride] = useState<string | null>(
+    null,
+  );
   const [nameOverride, setNameOverride] = useState<string | null>(null);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const [levelUpLevel, setLevelUpLevel] = useState<number | null>(null);
@@ -57,6 +79,7 @@ export function HomeDashboard({ today }: { today: string }) {
     useState<FoodKind>("onigiri");
   const [feedAmount, setFeedAmount] = useState(1);
   const name = nameOverride ?? maso.name;
+  const profileName = profileNameOverride ?? profile.displayName;
   const todayRecords = useMemo(
     () => records.filter((record) => record.workoutDate === today),
     [records, today],
@@ -68,6 +91,10 @@ export function HomeDashboard({ today }: { today: string }) {
   const selectedFood = FOOD_ITEMS[selectedFoodKind];
   const selectedFoodBalance =
     selectedFoodKind === "onigiri" ? maso.food : maso.protein;
+  const maxSelectableFood = Math.min(
+    selectedFoodBalance,
+    MAX_ITEM_ACTION_AMOUNT,
+  );
   const totalFood = maso.food + maso.protein;
 
   useEffect(() => {
@@ -147,8 +174,16 @@ export function HomeDashboard({ today }: { today: string }) {
     }
   }
 
-  function handleFeed() {
-    const result = feedMaso(selectedFoodKind, feedAmount);
+  async function handleFeed() {
+    if (mutatingRef.current) {
+      return;
+    }
+
+    mutatingRef.current = true;
+    setIsMutating(true);
+    const payload = `${selectedFoodKind}:${feedAmount}`;
+    const requestId = requestIdFor(pendingFeedIdsRef.current, payload);
+    const result = await feedMaso(selectedFoodKind, feedAmount, requestId);
     const didLevelUp = result.ok && result.data.level > maso.level;
 
     setMessage(
@@ -160,13 +195,20 @@ export function HomeDashboard({ today }: { today: string }) {
     );
 
     if (didLevelUp) {
+      pendingFeedIdsRef.current.delete(payload);
       closePanel();
     } else if (result.ok) {
+      pendingFeedIdsRef.current.delete(payload);
       setFeedStep("select");
       const nextBalance =
         selectedFoodKind === "onigiri" ? result.data.food : result.data.protein;
-      setFeedAmount(Math.max(1, Math.min(feedAmount, nextBalance)));
+      setFeedAmount(
+        Math.max(1, Math.min(feedAmount, nextBalance, MAX_ITEM_ACTION_AMOUNT)),
+      );
     }
+
+    mutatingRef.current = false;
+    setIsMutating(false);
   }
 
   function changeFeedAmount(nextAmount: number) {
@@ -176,7 +218,7 @@ export function HomeDashboard({ today }: { today: string }) {
     }
 
     setFeedAmount(
-      Math.min(selectedFoodBalance, Math.max(1, Math.floor(nextAmount))),
+      Math.min(maxSelectableFood, Math.max(1, Math.floor(nextAmount))),
     );
     setMessage(null);
   }
@@ -188,9 +230,18 @@ export function HomeDashboard({ today }: { today: string }) {
     setMessage(null);
   }
 
-  function handleExchange(kind: FoodKind) {
+  async function handleExchange(kind: FoodKind) {
+    if (mutatingRef.current) {
+      return;
+    }
+
     const item = FOOD_ITEMS[kind];
-    const result = exchangeGrowthPoints(kind);
+    mutatingRef.current = true;
+    setIsMutating(true);
+    const amount = 1;
+    const payload = `${kind}:${amount}`;
+    const requestId = requestIdFor(pendingExchangeIdsRef.current, payload);
+    const result = await exchangeGrowthPoints(kind, amount, requestId);
 
     setMessage(
       result.ok
@@ -199,35 +250,95 @@ export function HomeDashboard({ today }: { today: string }) {
     );
 
     if (result.ok) {
+      pendingExchangeIdsRef.current.delete(payload);
       setSelectedFoodKind(kind);
     }
+
+    mutatingRef.current = false;
+    setIsMutating(false);
   }
 
-  function handleRename(event: FormEvent<HTMLFormElement>) {
+  async function handleRename(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const result = renameMaso(name);
+    if (mutatingRef.current) {
+      return;
+    }
+
+    mutatingRef.current = true;
+    setIsMutating(true);
+    const result = await renameMaso(name);
 
     if (result.ok) {
       setNameOverride(null);
     }
 
     setMessage(result.ok ? `${result.data.name}に名前を変更しました。` : result.message);
+    mutatingRef.current = false;
+    setIsMutating(false);
+  }
+
+  async function handleProfileUpdate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (mutatingRef.current || storageMode !== "supabase") {
+      return;
+    }
+
+    mutatingRef.current = true;
+    setIsMutating(true);
+    const result = await updateProfile(profileName);
+
+    if (result.ok) {
+      setProfileNameOverride(null);
+    }
+
+    setMessage(
+      result.ok
+        ? `${result.data.displayName}に表示名を変更しました。`
+        : result.message,
+    );
+    mutatingRef.current = false;
+    setIsMutating(false);
+  }
+
+  async function handleClearLocalData() {
+    if (mutatingRef.current || storageMode !== "local") {
+      return;
+    }
+
+    mutatingRef.current = true;
+    setIsMutating(true);
+    const result = await clearLocalData();
+    if (result.ok) {
+      setNameOverride(null);
+      setIsConfirmingClear(false);
+      closePanel();
+    }
+    setMessage(
+      result.ok
+        ? "端末内のプレビューデータを消去しました。"
+        : result.message,
+    );
+    mutatingRef.current = false;
+    setIsMutating(false);
   }
 
   if (!isReady) {
     return (
       <main className="app-page" aria-busy="true" aria-label="ホームを読み込み中">
-        <div className="app-container animate-pulse">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="h-3 w-32 rounded bg-line" />
-              <div className="mt-3 h-8 w-40 rounded bg-line" />
+        <div className="app-container">
+          <StorageNotice />
+          <div className="animate-pulse">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="h-3 w-32 rounded bg-line" />
+                <div className="mt-3 h-8 w-40 rounded bg-line" />
+              </div>
+              <div className="size-12 rounded-full bg-line" />
             </div>
-            <div className="size-12 rounded-full bg-line" />
+            <div className="mt-5 h-20 rounded-2xl bg-canvas" />
+            <div className="mt-5 h-[430px] rounded-3xl bg-canvas" />
           </div>
-          <div className="mt-5 h-20 rounded-2xl bg-canvas" />
-          <div className="mt-5 h-[430px] rounded-3xl bg-canvas" />
-          <span className="sr-only">端末の記録を読み込んでいます</span>
+          <span className="sr-only">記録を読み込んでいます</span>
         </div>
       </main>
     );
@@ -366,6 +477,11 @@ export function HomeDashboard({ today }: { today: string }) {
                 aria-labelledby="feed-panel-title"
                 className="home-panel-dialog"
                 onClose={() => setPanel(null)}
+                onCancel={(event) => {
+                  if (isMutating) {
+                    event.preventDefault();
+                  }
+                }}
               >
                 <div className="home-dialog-sheet">
                 <div className="flex items-start justify-between gap-4">
@@ -380,8 +496,9 @@ export function HomeDashboard({ today }: { today: string }) {
                   <button
                     type="button"
                     onClick={closePanel}
+                    disabled={isMutating}
                     aria-label="エサやりを閉じる"
-                    className="grid size-11 shrink-0 place-items-center rounded-full border border-ink/25 bg-white/45"
+                    className="grid size-11 shrink-0 place-items-center rounded-full border border-ink/25 bg-white/45 disabled:cursor-wait disabled:opacity-50"
                   >
                     <X aria-hidden="true" size={18} />
                   </button>
@@ -391,6 +508,7 @@ export function HomeDashboard({ today }: { today: string }) {
                     <button
                       key={mode}
                       type="button"
+                      disabled={isMutating}
                       onClick={() => {
                         setFeedMode(mode);
                         setFeedStep("select");
@@ -442,7 +560,7 @@ export function HomeDashboard({ today }: { today: string }) {
                               <button
                                 type="button"
                                 onClick={() => handleExchange(kind)}
-                                disabled={!canExchange}
+                                disabled={!canExchange || isMutating}
                                 className="min-h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
                               >
                                 {item.growthPointCost} ptで交換
@@ -469,6 +587,7 @@ export function HomeDashboard({ today }: { today: string }) {
                             <button
                               key={kind}
                               type="button"
+                              disabled={isMutating}
                               onClick={() => chooseFood(kind)}
                               aria-pressed={selectedFoodKind === kind}
                               className={`min-h-16 rounded-xl border px-3 text-left ${
@@ -505,7 +624,9 @@ export function HomeDashboard({ today }: { today: string }) {
                         <button
                           type="button"
                           onClick={() => changeFeedAmount(feedAmount - 1)}
-                          disabled={selectedFoodBalance < 1 || feedAmount <= 1}
+                          disabled={
+                            isMutating || selectedFoodBalance < 1 || feedAmount <= 1
+                          }
                           aria-label="エサを1個減らす"
                           className="grid min-h-12 place-items-center rounded-xl border border-ink/25 bg-white disabled:cursor-not-allowed disabled:opacity-35"
                         >
@@ -517,12 +638,12 @@ export function HomeDashboard({ today }: { today: string }) {
                             type="number"
                             inputMode="numeric"
                             min={1}
-                            max={Math.max(1, selectedFoodBalance)}
+                            max={Math.max(1, maxSelectableFood)}
                             value={selectedFoodBalance > 0 ? feedAmount : 0}
                             onChange={(event) =>
                               changeFeedAmount(Number(event.target.value))
                             }
-                            disabled={selectedFoodBalance < 1}
+                            disabled={isMutating || selectedFoodBalance < 1}
                             className="data-number min-h-12 w-full rounded-xl border border-ink/25 bg-white px-10 text-center text-xl font-bold disabled:bg-canvas disabled:text-muted"
                           />
                           <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-xs font-bold text-muted">
@@ -532,7 +653,11 @@ export function HomeDashboard({ today }: { today: string }) {
                         <button
                           type="button"
                           onClick={() => changeFeedAmount(feedAmount + 1)}
-                          disabled={selectedFoodBalance < 1 || feedAmount >= selectedFoodBalance}
+                          disabled={
+                            isMutating ||
+                            selectedFoodBalance < 1 ||
+                            feedAmount >= maxSelectableFood
+                          }
                           aria-label="エサを1個増やす"
                           className="grid min-h-12 place-items-center rounded-xl border border-ink/25 bg-white disabled:cursor-not-allowed disabled:opacity-35"
                         >
@@ -541,11 +666,17 @@ export function HomeDashboard({ today }: { today: string }) {
                       </div>
                       <button
                         type="button"
-                        onClick={() => changeFeedAmount(selectedFoodBalance)}
-                        disabled={selectedFoodBalance < 1 || feedAmount === selectedFoodBalance}
+                        onClick={() => changeFeedAmount(maxSelectableFood)}
+                        disabled={
+                          isMutating ||
+                          selectedFoodBalance < 1 ||
+                          feedAmount === maxSelectableFood
+                        }
                         className="mt-2 min-h-11 w-full rounded-xl border border-ink/25 bg-white text-xs font-bold disabled:cursor-not-allowed disabled:opacity-35"
                       >
-                        持っている{selectedFood.name}を全部選ぶ
+                        {selectedFoodBalance > MAX_ITEM_ACTION_AMOUNT
+                          ? `一度にあげられる最大${MAX_ITEM_ACTION_AMOUNT}個を選ぶ`
+                          : `持っている${selectedFood.name}を全部選ぶ`}
                       </button>
                     </fieldset>
 
@@ -555,7 +686,7 @@ export function HomeDashboard({ today }: { today: string }) {
                         setFeedStep("confirm");
                         setMessage(null);
                       }}
-                      disabled={selectedFoodBalance < 1}
+                      disabled={isMutating || selectedFoodBalance < 1}
                       className="mt-4 flex min-h-12 w-full items-center justify-center rounded-xl bg-accent px-5 font-bold text-white disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
                     >
                       {selectedFoodBalance > 0 ? "この個数で確認" : "交換してからあげる"}
@@ -586,11 +717,12 @@ export function HomeDashboard({ today }: { today: string }) {
                     <div className="mt-4 grid grid-cols-[1fr_1.35fr] gap-2">
                       <button
                         type="button"
+                        disabled={isMutating}
                         onClick={() => {
                           setFeedStep("select");
                           setMessage(null);
                         }}
-                        className="flex min-h-12 items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-ink/25 bg-white px-2 text-[11px] font-bold"
+                        className="flex min-h-12 items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-ink/25 bg-white px-2 text-[11px] font-bold disabled:cursor-wait disabled:text-muted"
                       >
                         <ChevronLeft aria-hidden="true" size={17} />
                         個数を変更
@@ -598,10 +730,13 @@ export function HomeDashboard({ today }: { today: string }) {
                       <button
                         type="button"
                         onClick={handleFeed}
-                        className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-accent px-3 text-sm font-bold text-white"
+                        disabled={isMutating}
+                        className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-accent px-3 text-sm font-bold text-white disabled:cursor-wait disabled:bg-line disabled:text-muted"
                       >
                         <Beef aria-hidden="true" size={18} />
-                        {selectedFood.name}を{feedAmount}個あげる
+                        {isMutating
+                          ? "保存しています"
+                          : `${selectedFood.name}を${feedAmount}個あげる`}
                       </button>
                     </div>
                   </>
@@ -632,7 +767,9 @@ export function HomeDashboard({ today }: { today: string }) {
                       設定
                     </p>
                     <h2 id="menu-panel-title" className="mt-1 text-lg font-semibold">
-                      マソ君の設定
+                      {storageMode === "supabase"
+                        ? "アカウントとマソ君"
+                        : "マソ君の設定"}
                     </h2>
                   </div>
                   <button
@@ -644,6 +781,39 @@ export function HomeDashboard({ today }: { today: string }) {
                     <X aria-hidden="true" size={18} />
                   </button>
                 </div>
+
+                {storageMode === "supabase" ? (
+                  <form
+                    onSubmit={handleProfileUpdate}
+                    className="mt-4 border-t border-ink/15 pt-4"
+                  >
+                    <label
+                      htmlFor="profile-display-name"
+                      className="block text-xs font-bold"
+                    >
+                      アカウントの表示名
+                    </label>
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        id="profile-display-name"
+                        value={profileName}
+                        onChange={(event) =>
+                          setProfileNameOverride(event.target.value)
+                        }
+                        autoComplete="nickname"
+                        maxLength={30}
+                        className="min-h-11 min-w-0 flex-1 rounded-xl border border-ink/25 bg-white/65 px-3 text-sm"
+                      />
+                      <button
+                        type="submit"
+                        disabled={isMutating}
+                        className="min-h-11 shrink-0 rounded-xl border border-ink/25 bg-white/55 px-4 text-xs font-bold disabled:cursor-wait disabled:text-muted"
+                      >
+                        {isMutating ? "保存中" : "表示名を保存"}
+                      </button>
+                    </div>
+                  </form>
+                ) : null}
 
                 <form onSubmit={handleRename} className="mt-4">
                   <label htmlFor="maso-name" className="block text-xs font-bold">
@@ -659,10 +829,11 @@ export function HomeDashboard({ today }: { today: string }) {
                     />
                     <button
                       type="submit"
-                      className="flex min-h-11 shrink-0 items-center gap-2 rounded-xl bg-accent px-4 text-xs font-bold text-white"
+                      disabled={isMutating}
+                      className="flex min-h-11 shrink-0 items-center gap-2 rounded-xl bg-accent px-4 text-xs font-bold text-white disabled:cursor-wait disabled:bg-line disabled:text-muted"
                     >
                       <PencilLine aria-hidden="true" size={15} />
-                      保存
+                      {isMutating ? "保存中" : "保存"}
                     </button>
                   </div>
                 </form>
@@ -672,10 +843,10 @@ export function HomeDashboard({ today }: { today: string }) {
                   className="mt-4 flex min-h-11 items-center gap-3 border-t border-ink/15 pt-3 text-sm font-bold"
                 >
                   <LogIn aria-hidden="true" size={17} />
-                  ログイン設定
+                  {storageMode === "supabase" ? "アカウント" : "ログイン設定"}
                 </Link>
 
-                {isConfirmingClear ? (
+                {storageMode === "local" && isConfirmingClear ? (
                   <div className="mt-2 border-t border-ink/15 pt-3">
                     <p role="alert" className="text-xs leading-5 font-bold text-accent-strong">
                       この端末の記録・設定・育成状態がすべて消えます。
@@ -693,26 +864,15 @@ export function HomeDashboard({ today }: { today: string }) {
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
-                          const result = clearLocalData();
-                          if (result.ok) {
-                            setNameOverride(null);
-                            setIsConfirmingClear(false);
-                            closePanel();
-                          }
-                          setMessage(
-                            result.ok
-                              ? "端末内のプレビューデータを消去しました。"
-                              : result.message,
-                          );
-                        }}
-                        className="min-h-11 rounded-xl bg-accent-strong px-2 text-xs font-bold text-white"
+                        onClick={handleClearLocalData}
+                        disabled={isMutating}
+                        className="min-h-11 rounded-xl bg-accent-strong px-2 text-xs font-bold text-white disabled:cursor-wait disabled:bg-line disabled:text-muted"
                       >
-                        すべて消去
+                        {isMutating ? "消去中" : "すべて消去"}
                       </button>
                     </div>
                   </div>
-                ) : (
+                ) : storageMode === "local" ? (
                   <button
                     ref={clearButtonRef}
                     type="button"
@@ -722,7 +882,7 @@ export function HomeDashboard({ today }: { today: string }) {
                     <RotateCcw aria-hidden="true" size={16} />
                     プレビューデータを消去
                   </button>
-                )}
+                ) : null}
                 {message ? (
                   <p aria-live="polite" className="mt-3 text-xs font-bold">
                     {message}

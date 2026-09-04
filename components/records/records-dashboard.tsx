@@ -10,10 +10,10 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { StorageNotice } from "@/components/common/storage-notice";
-import { useDemoData } from "@/components/providers/demo-data-provider";
+import { useAppData } from "@/components/providers/app-data-provider";
 import {
   buildMonthGrid,
   dateKeyInTimeZone,
@@ -41,7 +41,8 @@ export function RecordsDashboard({
   showSavedMessage: boolean;
 }) {
   const router = useRouter();
-  const { records, settings, updateSettings, isReady } = useDemoData();
+  const { records, settings, updateSettings, isReady, storageMode } = useAppData();
+  const savingSettingsRef = useRef(false);
   const initialDateObject = parseDateKey(initialDate);
   const [screen, setScreen] = useState<"calendar" | "day">(initialView);
   const [selectedDate, setSelectedDate] = useState(initialDate);
@@ -50,6 +51,7 @@ export function RecordsDashboard({
     monthIndex: initialDateObject.getUTCMonth(),
   });
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
   const calendarDays = useMemo(
     () => buildMonthGrid(view.year, view.monthIndex),
     [view.monthIndex, view.year],
@@ -102,8 +104,16 @@ export function RecordsDashboard({
     router.replace("/records", { scroll: false });
   }
 
-  function saveSettings(defaultSets: number, weightUnit: WeightUnit) {
-    const result = updateSettings({ defaultSets, weightUnit });
+  async function saveSettings(defaultSets: number, weightUnit: WeightUnit) {
+    if (savingSettingsRef.current) {
+      return;
+    }
+
+    savingSettingsRef.current = true;
+    setIsSavingSettings(true);
+    const result = await updateSettings({ defaultSets, weightUnit });
+    savingSettingsRef.current = false;
+    setIsSavingSettings(false);
     setSettingsMessage(
       result.ok ? "次の記録から設定を反映します。" : result.message,
     );
@@ -144,10 +154,11 @@ export function RecordsDashboard({
                     デフォルトセット数
                     <select
                       value={settings.defaultSets}
+                      disabled={!isReady || isSavingSettings}
                       onChange={(event) =>
                         saveSettings(Number(event.target.value), settings.weightUnit)
                       }
-                      className="mt-2 min-h-12 w-full rounded-xl border border-ink/20 bg-white/65 px-3 text-sm font-bold text-ink"
+                      className="mt-2 min-h-12 w-full rounded-xl border border-ink/20 bg-white/65 px-3 text-sm font-bold text-ink disabled:cursor-wait disabled:text-muted"
                     >
                       {Array.from({ length: 10 }, (_, index) => index + 1).map(
                         (value) => (
@@ -166,6 +177,7 @@ export function RecordsDashboard({
                           key={unit}
                           type="button"
                           aria-pressed={settings.weightUnit === unit}
+                          disabled={!isReady || isSavingSettings}
                           onClick={() => saveSettings(settings.defaultSets, unit)}
                           className={`min-h-11 rounded-xl border text-sm font-bold ${
                             settings.weightUnit === unit
@@ -187,7 +199,15 @@ export function RecordsDashboard({
                     </div>
                     <div className="flex justify-between gap-3">
                       <dt className="text-muted">保存先</dt>
-                      <dd className="font-bold">この端末（プレビュー）</dd>
+                      <dd className="font-bold">
+                        {storageMode === "supabase"
+                          ? "Supabase（アカウント）"
+                          : storageMode === "loading"
+                            ? "接続を確認中"
+                            : storageMode === "local"
+                              ? "この端末（プレビュー）"
+                              : "再ログインが必要"}
+                      </dd>
                     </div>
                   </dl>
                   {settingsMessage ? (

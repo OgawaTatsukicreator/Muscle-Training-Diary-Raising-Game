@@ -17,6 +17,7 @@ import { dateKeyInTimeZone } from "@/lib/domain/date";
 import {
   applyExperience,
   FOOD_ITEMS,
+  MAX_ITEM_ACTION_AMOUNT,
   rewardsFromVolume,
   type FoodKind,
 } from "@/lib/domain/growth";
@@ -49,7 +50,7 @@ const masoStatusSchema = z
   })
   .strict();
 
-type MasoStatus = z.infer<typeof masoStatusSchema>;
+export type MasoStatus = z.infer<typeof masoStatusSchema>;
 
 const persistedStateSchema = z
   .object({
@@ -61,13 +62,13 @@ const persistedStateSchema = z
   })
   .strict();
 
-type DemoDataState = z.infer<typeof persistedStateSchema>;
+export type DemoDataState = z.infer<typeof persistedStateSchema>;
 
-type ActionResult<T> =
+export type ActionResult<T> =
   | { ok: true; data: T }
   | { ok: false; message: string; fieldErrors?: Record<string, string> };
 
-type DemoDataContextValue = DemoDataState & {
+export type DemoDataContextValue = DemoDataState & {
   isReady: boolean;
   storageIssue: string | null;
   addWorkout: (
@@ -366,6 +367,7 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
 
       if (
         exchangeAmount < 1 ||
+        exchangeAmount > MAX_ITEM_ACTION_AMOUNT ||
         !Number.isSafeInteger(totalCost) ||
         state.maso.growthPoints < totalCost
       ) {
@@ -401,7 +403,11 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
       const inventoryKey = kind === "onigiri" ? "food" : "protein";
       const item = FOOD_ITEMS[kind];
 
-      if (useAmount < 1 || state.maso[inventoryKey] < useAmount) {
+      if (
+        useAmount < 1 ||
+        useAmount > MAX_ITEM_ACTION_AMOUNT ||
+        state.maso[inventoryKey] < useAmount
+      ) {
         return { ok: false, message: `${item.name}が足りません。育成ポイントと交換できます。` };
       }
 

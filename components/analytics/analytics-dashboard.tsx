@@ -6,7 +6,7 @@ import { useMemo } from "react";
 
 import { PageHeading } from "@/components/common/page-heading";
 import { StorageNotice } from "@/components/common/storage-notice";
-import { useDemoData } from "@/components/providers/demo-data-provider";
+import { useAppData } from "@/components/providers/app-data-provider";
 import { parseDateKey } from "@/lib/domain/date";
 import {
   BODY_PART_LABELS,
@@ -19,7 +19,7 @@ function dateKeyFromUtcDate(date: Date): string {
 }
 
 export function AnalyticsDashboard({ today }: { today: string }) {
-  const { records, isReady } = useDemoData();
+  const { records, isReady } = useAppData();
   const dailyData = useMemo(() => {
     const todayDate = parseDateKey(today);
 

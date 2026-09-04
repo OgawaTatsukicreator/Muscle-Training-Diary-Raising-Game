@@ -17,7 +17,7 @@ import { useMemo, useRef, useState, type FormEvent } from "react";
 import type { ZodError } from "zod";
 
 import { StorageNotice } from "@/components/common/storage-notice";
-import { useDemoData } from "@/components/providers/demo-data-provider";
+import { useAppData } from "@/components/providers/app-data-provider";
 import {
   dateKeyInTimeZone,
   isDateKey,
@@ -39,10 +39,15 @@ type FieldErrors = Partial<
 
 export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
   const router = useRouter();
-  const { exercises, settings, addExercise, addWorkout, isReady } = useDemoData();
+  const { exercises, settings, addExercise, addWorkout, isReady } = useAppData();
   const formRef = useRef<HTMLFormElement>(null);
   const exerciseStepHeadingRef = useRef<HTMLHeadingElement>(null);
+  const addingExerciseRef = useRef(false);
   const submittingRef = useRef(false);
+  const pendingWorkoutRef = useRef<{
+    payload: string;
+    requestId: string;
+  } | null>(null);
   const [step, setStep] = useState<"exercise" | "details">("exercise");
   const [workoutDate, setWorkoutDate] = useState(initialDate);
   const [bodyPart, setBodyPart] = useState<BodyPart>("chest");
@@ -54,6 +59,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
   const [memo, setMemo] = useState("");
   const [newExerciseName, setNewExerciseName] = useState("");
   const [newExerciseError, setNewExerciseError] = useState<string | null>(null);
+  const [isAddingExercise, setIsAddingExercise] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -85,8 +91,16 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
     setStep("details");
   }
 
-  function handleAddExercise() {
-    const result = addExercise(newExerciseName, bodyPart);
+  async function handleAddExercise() {
+    if (addingExerciseRef.current) {
+      return;
+    }
+
+    addingExerciseRef.current = true;
+    setIsAddingExercise(true);
+    const result = await addExercise(newExerciseName, bodyPart);
+    addingExerciseRef.current = false;
+    setIsAddingExercise(false);
 
     if (!result.ok) {
       setNewExerciseError(result.message);
@@ -125,7 +139,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
     });
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (submittingRef.current) {
@@ -157,7 +171,18 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
     setFieldErrors({});
     setMessage(null);
 
-    const result = addWorkout(parsed.data, crypto.randomUUID());
+    const payload = JSON.stringify(parsed.data);
+    if (pendingWorkoutRef.current?.payload !== payload) {
+      pendingWorkoutRef.current = {
+        payload,
+        requestId: crypto.randomUUID(),
+      };
+    }
+
+    const result = await addWorkout(
+      parsed.data,
+      pendingWorkoutRef.current.requestId,
+    );
 
     if (!result.ok) {
       submittingRef.current = false;
@@ -169,6 +194,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
       return;
     }
 
+    pendingWorkoutRef.current = null;
     router.push(`/records?date=${encodeURIComponent(workoutDate)}&saved=1`);
   }
 
@@ -269,6 +295,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                           name="body-part"
                           value={part}
                           checked={selected}
+                          disabled={isAddingExercise}
                           onChange={() => selectBodyPart(part)}
                           className="sr-only"
                         />
@@ -297,6 +324,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                         id="new-exercise-name"
                         type="text"
                         value={newExerciseName}
+                        disabled={isAddingExercise}
                         onChange={(event) => {
                           setNewExerciseName(event.target.value);
                           setNewExerciseError(null);
@@ -310,9 +338,10 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                       <button
                         type="button"
                         onClick={handleAddExercise}
-                        className="min-h-11 shrink-0 rounded-lg bg-accent px-4 text-xs font-bold text-white"
+                        disabled={!isReady || isAddingExercise}
+                        className="min-h-11 shrink-0 rounded-lg bg-accent px-4 text-xs font-bold text-white disabled:cursor-wait disabled:bg-line disabled:text-muted"
                       >
-                        追加
+                        {isAddingExercise ? "追加中" : "追加"}
                       </button>
                     </div>
                     {newExerciseError ? (
@@ -334,14 +363,22 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                 </p>
               ) : null}
 
-              {filteredExercises.length > 0 ? (
+              {!isReady ? (
+                <div
+                  aria-live="polite"
+                  className="mt-3 rounded-xl border border-line bg-canvas p-8 text-center text-sm text-muted"
+                >
+                  種目を読み込んでいます。
+                </div>
+              ) : filteredExercises.length > 0 ? (
                 <ul className="mt-3 space-y-3">
                   {filteredExercises.map((exercise) => (
                     <li key={exercise.id}>
                       <button
                         type="button"
                         onClick={() => selectExercise(exercise.id)}
-                        className="flex min-h-24 w-full items-center justify-between gap-4 rounded-xl border border-line bg-white px-5 py-4 text-left transition-colors hover:border-ink hover:bg-canvas"
+                        disabled={isAddingExercise}
+                        className="flex min-h-24 w-full items-center justify-between gap-4 rounded-xl border border-line bg-white px-5 py-4 text-left transition-colors hover:border-ink hover:bg-canvas disabled:cursor-wait disabled:opacity-55"
                       >
                         <span>
                           <span className="block text-[10px] font-bold text-muted">

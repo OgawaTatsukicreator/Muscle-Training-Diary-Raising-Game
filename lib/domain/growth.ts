@@ -2,6 +2,7 @@ export const GROWTH_POINT_VOLUME_STEP_KG = 100;
 export const EXPERIENCE_PER_FOOD = 10;
 export const MAX_MASO_LEVEL = 999;
 export const MAX_MASO_PHASE = 50;
+export const MAX_ITEM_ACTION_AMOUNT = 1_000;
 
 export const FOOD_ITEMS = {
   onigiri: {
