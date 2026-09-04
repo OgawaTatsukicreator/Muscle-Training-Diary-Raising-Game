@@ -16,13 +16,16 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.next();
   }
 
+  const hadAuthSession = request.cookies.getAll().some((cookie) =>
+    /^sb-.+-auth-token(?:\.\d+)?$/.test(cookie.name),
+  );
   let response = NextResponse.next({ request });
   const supabase = createServerClient(config.url, config.publishableKey, {
     cookies: {
       getAll() {
         return request.cookies.getAll();
       },
-      setAll(cookiesToSet) {
+      setAll(cookiesToSet, headers) {
         for (const { name, value } of cookiesToSet) {
           request.cookies.set(name, value);
         }
@@ -31,6 +34,10 @@ export async function updateSession(request: NextRequest) {
 
         for (const { name, value, options } of cookiesToSet) {
           response.cookies.set(name, value, options);
+        }
+
+        for (const [name, value] of Object.entries(headers)) {
+          response.headers.set(name, value);
         }
       },
     },
@@ -46,7 +53,23 @@ export async function updateSession(request: NextRequest) {
       "next",
       `${request.nextUrl.pathname}${request.nextUrl.search}`,
     );
-    return NextResponse.redirect(loginUrl);
+    loginUrl.searchParams.set(
+      "status",
+      hadAuthSession ? "session-expired" : "login-required",
+    );
+    const redirectResponse = NextResponse.redirect(loginUrl);
+
+    for (const cookie of response.cookies.getAll()) {
+      redirectResponse.cookies.set(cookie);
+    }
+
+    redirectResponse.headers.set(
+      "Cache-Control",
+      "private, no-cache, no-store, must-revalidate, max-age=0",
+    );
+    redirectResponse.headers.set("Expires", "0");
+    redirectResponse.headers.set("Pragma", "no-cache");
+    return redirectResponse;
   }
 
   return response;

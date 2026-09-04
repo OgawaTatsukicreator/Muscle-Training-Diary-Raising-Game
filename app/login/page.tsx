@@ -17,12 +17,21 @@ export default async function LoginPage({
   }>;
 }) {
   const params = await searchParams;
+  const rawStatus = Array.isArray(params.status)
+    ? params.status[0]
+    : params.status;
+  const status =
+    rawStatus === "callback-error" ||
+    rawStatus === "login-required" ||
+    rawStatus === "session-expired"
+      ? rawStatus
+      : null;
 
   return (
     <LoginForm
       configured={isSupabaseConfigured()}
       nextPath={safeNextPath(params.next)}
-      callbackFailed={params.status === "callback-error"}
+      status={status}
     />
   );
 }

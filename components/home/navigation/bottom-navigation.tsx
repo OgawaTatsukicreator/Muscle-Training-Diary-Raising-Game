@@ -14,6 +14,7 @@ export function ConditionalBottomNavigation() {
   const pathname = usePathname();
   const isFocusedRoute =
     pathname === "/login" ||
+    pathname === "/register" ||
     pathname === "/records/new" ||
     /^\/records\/[^/]+\/edit$/.test(pathname);
 
