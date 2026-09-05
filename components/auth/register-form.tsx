@@ -2,9 +2,10 @@
 
 import { ArrowLeft, CheckCircle2, Eye, EyeOff, Mail, UserRound } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 
 import { registrationCredentialsSchema } from "@/lib/auth/credentials";
+import { registrationErrorMessage } from "@/lib/auth/registration-error";
 import { createClient } from "@/lib/supabase/client";
 
 type RegistrationField =
@@ -23,6 +24,7 @@ export function RegisterForm({
   nextPath: string;
 }) {
   const supabase = useMemo(() => createClient(), []);
+  const submittingRef = useRef(false);
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -41,7 +43,7 @@ export function RegisterForm({
   async function handleRegister(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!supabase || isSubmitting) {
+    if (!supabase || submittingRef.current) {
       return;
     }
 
@@ -60,9 +62,18 @@ export function RegisterForm({
       }
       setFieldErrors(errors);
       setMessage("入力内容を確認してください。");
+      const firstField = parsed.error.issues[0]?.path[0] as RegistrationField;
+      const fieldId = {
+        displayName: "register-display-name",
+        email: "register-email",
+        password: "register-password",
+        passwordConfirmation: "register-password-confirmation",
+      }[firstField];
+      if (fieldId) document.getElementById(fieldId)?.focus();
       return;
     }
 
+    submittingRef.current = true;
     setIsSubmitting(true);
     setFieldErrors({});
     setMessage(null);
@@ -70,32 +81,33 @@ export function RegisterForm({
     const callbackUrl = new URL("/auth/callback", window.location.origin);
     callbackUrl.searchParams.set("next", nextPath);
 
-    const { data, error } = await supabase.auth.signUp({
-      email: parsed.data.email,
-      password: parsed.data.password,
-      options: {
-        data: { display_name: parsed.data.displayName },
-        emailRedirectTo: callbackUrl.toString(),
-      },
-    });
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: parsed.data.email,
+        password: parsed.data.password,
+        options: {
+          data: { display_name: parsed.data.displayName },
+          emailRedirectTo: callbackUrl.toString(),
+        },
+      });
 
-    setIsSubmitting(false);
-
-    if (error) {
-      setMessage(
-        "アカウントを作成できませんでした。時間をおいて、もう一度お試しください。",
-      );
-      return;
+      if (error) {
+        setMessage(registrationErrorMessage(error));
+        return;
+      }
+      if (data.session) {
+        window.location.assign(nextPath);
+        return;
+      }
+      setPassword("");
+      setPasswordConfirmation("");
+      setSubmittedEmail(parsed.data.email);
+    } catch {
+      setMessage("通信できませんでした。インターネット接続を確認し、もう一度登録してください。");
+    } finally {
+      submittingRef.current = false;
+      setIsSubmitting(false);
     }
-
-    if (data.session) {
-      window.location.assign(nextPath);
-      return;
-    }
-
-    setPassword("");
-    setPasswordConfirmation("");
-    setSubmittedEmail(parsed.data.email);
   }
 
   if (submittedEmail) {
@@ -108,13 +120,16 @@ export function RegisterForm({
           <p className="mt-6 text-xs font-black tracking-[0.14em] text-accent-strong uppercase">
             Check your email
           </p>
-          <h1 className="mt-2 text-3xl font-black tracking-[-0.05em]">
+          <h1 className="mt-2 text-2xl font-black tracking-[-0.05em] text-balance sm:text-3xl">
             メールを確認してください
           </h1>
           <p className="mt-4 text-sm leading-7 text-muted">
             登録できる場合は、
             <strong className="break-all text-ink">{submittedEmail}</strong>
             へ確認メールを送ります。メール内のリンクを開くと登録が完了します。
+          </p>
+          <p className="mt-3 text-sm leading-6 text-muted">
+            この画面と同じブラウザでメール内のリンクを開いてください。届かない場合は迷惑メールフォルダも確認してください。
           </p>
           <p className="mt-3 text-sm leading-6 text-muted">
             すでに登録済みの場合は、新しいアカウントは作られません。ログイン画面をお使いください。
@@ -141,18 +156,18 @@ export function RegisterForm({
     <main className="app-page--focused grid place-items-center">
       <section className="surface-panel w-full max-w-lg rounded-[34px] p-6 sm:p-9">
         <Link
-          href={`/login?next=${encodeURIComponent(nextPath)}`}
+          href={`/welcome?next=${encodeURIComponent(nextPath)}`}
           className="mb-7 inline-flex min-h-11 items-center gap-2 text-sm font-bold text-muted"
         >
           <ArrowLeft aria-hidden="true" size={18} />
-          ログインへ戻る
+          はじめの画面へ
         </Link>
 
         <p className="text-xs font-black tracking-[0.14em] text-accent-strong uppercase">
-          First setup
+          はじめての方へ
         </p>
         <h1 className="mt-2 text-3xl font-black tracking-[-0.05em]">
-          アカウントを作成
+          初回登録
         </h1>
         <p className="mt-3 text-sm leading-6 text-muted">
           初回だけ登録すると、あなた専用の記録・設定・マソ君が用意されます。
@@ -166,7 +181,8 @@ export function RegisterForm({
             </p>
           </div>
         ) : (
-          <form onSubmit={handleRegister} noValidate className="mt-7">
+          <form onSubmit={handleRegister} noValidate aria-busy={isSubmitting} className="mt-7">
+            <fieldset disabled={isSubmitting} className="min-w-0">
             <div>
               <label htmlFor="register-display-name" className="mb-2 block text-sm font-black">
                 表示名
@@ -315,6 +331,7 @@ export function RegisterForm({
             >
               {isSubmitting ? "作成しています" : "アカウントを作成"}
             </button>
+            </fieldset>
           </form>
         )}
 
@@ -323,6 +340,9 @@ export function RegisterForm({
             {message}
           </p>
         ) : null}
+        <p className="mt-6 border-t border-line pt-5 text-center text-sm text-muted">
+          登録済みの方は<Link href={`/login?next=${encodeURIComponent(nextPath)}`} className="ml-1 inline-flex min-h-11 items-center font-bold text-accent-strong underline underline-offset-4">ログイン</Link>
+        </p>
       </section>
     </main>
   );

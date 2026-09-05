@@ -120,11 +120,11 @@ export function LoginForm({ configured, nextPath, status }: LoginFormProps) {
     <main className="app-page--focused grid place-items-center">
       <section className="surface-panel w-full max-w-lg rounded-[34px] p-6 sm:p-9">
         <Link
-          href="/"
+          href={`/welcome?next=${encodeURIComponent(nextPath)}`}
           className="mb-7 inline-flex min-h-11 items-center gap-2 text-sm font-bold text-muted"
         >
           <ArrowLeft aria-hidden="true" size={18} />
-          ホームへ戻る
+          はじめの画面へ
         </Link>
 
         <p className="text-xs font-black tracking-[0.14em] text-accent-strong uppercase">

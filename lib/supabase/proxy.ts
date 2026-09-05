@@ -2,12 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { getSupabasePublicConfig } from "@/lib/supabase/config";
-
-const PROTECTED_PATHS = ["/records", "/analytics"];
-
-function isProtectedPath(pathname: string): boolean {
-  return pathname === "/" || PROTECTED_PATHS.some((path) => pathname.startsWith(path));
-}
+import { guestEntryPath, isProtectedPath } from "@/lib/auth/routes";
 
 export async function updateSession(request: NextRequest) {
   const config = getSupabasePublicConfig();
@@ -46,17 +41,9 @@ export async function updateSession(request: NextRequest) {
   const { data, error } = await supabase.auth.getClaims();
 
   if ((error || !data?.claims) && isProtectedPath(request.nextUrl.pathname)) {
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = "/login";
-    loginUrl.search = "";
-    loginUrl.searchParams.set(
-      "next",
-      `${request.nextUrl.pathname}${request.nextUrl.search}`,
-    );
-    loginUrl.searchParams.set(
-      "status",
-      hadAuthSession ? "session-expired" : "login-required",
-    );
+    const loginUrl = new URL(guestEntryPath(
+      `${request.nextUrl.pathname}${request.nextUrl.search}`, hadAuthSession,
+    ), request.url);
     const redirectResponse = NextResponse.redirect(loginUrl);
 
     for (const cookie of response.cookies.getAll()) {

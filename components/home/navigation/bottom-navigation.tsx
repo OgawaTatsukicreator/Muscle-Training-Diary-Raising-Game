@@ -13,6 +13,7 @@ const items = [
 export function ConditionalBottomNavigation() {
   const pathname = usePathname();
   const isFocusedRoute =
+    pathname === "/welcome" ||
     pathname === "/login" ||
     pathname === "/register" ||
     pathname === "/records/new" ||
