@@ -5,9 +5,7 @@ import {
   ChevronLeft,
   LogIn,
   Menu,
-  Minus,
   PencilLine,
-  Plus,
   RotateCcw,
   X,
 } from "lucide-react";
@@ -15,14 +13,19 @@ import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
+import { BgmSettings } from "@/components/audio/bgm-settings";
 import { StorageNotice } from "@/components/common/storage-notice";
+import { ItemQuantitySelector } from "@/components/home/item-quantity-selector";
 import { useAppData } from "@/components/providers/app-data-provider";
 import { formatJapaneseDate } from "@/lib/domain/date";
 import {
   FOOD_ITEMS,
   MAX_ITEM_ACTION_AMOUNT,
+  clampItemActionAmount,
+  isValidItemActionAmount,
   masoImageForLevel,
   masoPhaseForLevel,
+  maxExchangeAmount,
   requiredExperienceForLevel,
   type FoodKind,
 } from "@/lib/domain/growth";
@@ -95,6 +98,16 @@ export function HomeDashboard({ today }: { today: string }) {
     selectedFoodBalance,
     MAX_ITEM_ACTION_AMOUNT,
   );
+  const maxSelectableExchange = maxExchangeAmount(
+    maso.growthPoints,
+    selectedFoodKind,
+  );
+  const maximumAmount =
+    feedMode === "exchange" ? maxSelectableExchange : maxSelectableFood;
+  const canSubmitAmount =
+    isValidItemActionAmount(feedAmount) && feedAmount <= maximumAmount;
+  const exchangeCost =
+    maximumAmount > 0 ? feedAmount * selectedFood.growthPointCost : 0;
   const totalFood = maso.food + maso.protein;
 
   useEffect(() => {
@@ -175,7 +188,11 @@ export function HomeDashboard({ today }: { today: string }) {
   }
 
   async function handleFeed() {
-    if (mutatingRef.current) {
+    if (
+      mutatingRef.current ||
+      !isValidItemActionAmount(feedAmount) ||
+      feedAmount > maxSelectableFood
+    ) {
       return;
     }
 
@@ -183,43 +200,40 @@ export function HomeDashboard({ today }: { today: string }) {
     setIsMutating(true);
     const payload = `${selectedFoodKind}:${feedAmount}`;
     const requestId = requestIdFor(pendingFeedIdsRef.current, payload);
-    const result = await feedMaso(selectedFoodKind, feedAmount, requestId);
-    const didLevelUp = result.ok && result.data.level > maso.level;
+    try {
+      const result = await feedMaso(selectedFoodKind, feedAmount, requestId);
+      const didLevelUp = result.ok && result.data.level > maso.level;
 
-    setMessage(
-      result.ok
-        ? didLevelUp
-          ? `レベル${result.data.level}になりました！`
-          : `もぐもぐ。${selectedFood.name}を${feedAmount}個あげて、経験値が${feedAmount * selectedFood.experience}増えました。`
-        : result.message,
-    );
-
-    if (didLevelUp) {
-      pendingFeedIdsRef.current.delete(payload);
-      closePanel();
-    } else if (result.ok) {
-      pendingFeedIdsRef.current.delete(payload);
-      setFeedStep("select");
-      const nextBalance =
-        selectedFoodKind === "onigiri" ? result.data.food : result.data.protein;
-      setFeedAmount(
-        Math.max(1, Math.min(feedAmount, nextBalance, MAX_ITEM_ACTION_AMOUNT)),
+      setMessage(
+        result.ok
+          ? didLevelUp
+            ? `レベル${result.data.level}になりました！`
+            : `もぐもぐ。${selectedFood.name}を${feedAmount}個あげて、経験値が${feedAmount * selectedFood.experience}増えました。`
+          : result.message,
       );
-    }
 
-    mutatingRef.current = false;
-    setIsMutating(false);
+      if (didLevelUp) {
+        pendingFeedIdsRef.current.delete(payload);
+        closePanel();
+      } else if (result.ok) {
+        pendingFeedIdsRef.current.delete(payload);
+        setFeedStep("select");
+        const nextBalance =
+          selectedFoodKind === "onigiri" ? result.data.food : result.data.protein;
+        setFeedAmount(clampItemActionAmount(feedAmount, nextBalance));
+      }
+    } catch {
+      setMessage(
+        "エサやりの結果を確認できませんでした。通信状態を確認して、もう一度お試しください。",
+      );
+    } finally {
+      mutatingRef.current = false;
+      setIsMutating(false);
+    }
   }
 
   function changeFeedAmount(nextAmount: number) {
-    if (selectedFoodBalance < 1) {
-      setFeedAmount(1);
-      return;
-    }
-
-    setFeedAmount(
-      Math.min(maxSelectableFood, Math.max(1, Math.floor(nextAmount))),
-    );
+    setFeedAmount(clampItemActionAmount(nextAmount, maximumAmount));
     setMessage(null);
   }
 
@@ -230,32 +244,50 @@ export function HomeDashboard({ today }: { today: string }) {
     setMessage(null);
   }
 
-  async function handleExchange(kind: FoodKind) {
-    if (mutatingRef.current) {
+  async function handleExchange() {
+    if (
+      mutatingRef.current ||
+      !isValidItemActionAmount(feedAmount) ||
+      feedAmount > maxSelectableExchange
+    ) {
       return;
     }
 
-    const item = FOOD_ITEMS[kind];
     mutatingRef.current = true;
     setIsMutating(true);
-    const amount = 1;
-    const payload = `${kind}:${amount}`;
+    const payload = `${selectedFoodKind}:${feedAmount}`;
     const requestId = requestIdFor(pendingExchangeIdsRef.current, payload);
-    const result = await exchangeGrowthPoints(kind, amount, requestId);
+    try {
+      const result = await exchangeGrowthPoints(
+        selectedFoodKind,
+        feedAmount,
+        requestId,
+      );
 
-    setMessage(
-      result.ok
-        ? `${item.name}1個と交換しました。`
-        : result.message,
-    );
+      setMessage(
+        result.ok
+          ? `${selectedFood.name}${feedAmount}個と交換しました。`
+          : result.message,
+      );
 
-    if (result.ok) {
-      pendingExchangeIdsRef.current.delete(payload);
-      setSelectedFoodKind(kind);
+      if (result.ok) {
+        pendingExchangeIdsRef.current.delete(payload);
+        setFeedStep("select");
+        setFeedAmount(
+          clampItemActionAmount(
+            feedAmount,
+            maxExchangeAmount(result.data.growthPoints, selectedFoodKind),
+          ),
+        );
+      }
+    } catch {
+      setMessage(
+        "交換結果を確認できませんでした。通信状態を確認して、もう一度お試しください。",
+      );
+    } finally {
+      mutatingRef.current = false;
+      setIsMutating(false);
     }
-
-    mutatingRef.current = false;
-    setIsMutating(false);
   }
 
   async function handleRename(event: FormEvent<HTMLFormElement>) {
@@ -475,6 +507,7 @@ export function HomeDashboard({ today }: { today: string }) {
                 ref={panelDialogRef}
                 id="home-feed-panel"
                 aria-labelledby="feed-panel-title"
+                aria-busy={isMutating}
                 className="home-panel-dialog"
                 onClose={() => setPanel(null)}
                 onCancel={(event) => {
@@ -528,56 +561,17 @@ export function HomeDashboard({ today }: { today: string }) {
                 </div>
 
                 {feedMode === "exchange" ? (
-                  <>
                     <div className="mt-4 flex items-center justify-between rounded-xl border border-ink/15 bg-white/35 px-4 py-3">
                       <span className="text-xs font-bold">使える育成ポイント</span>
                       <span className="data-number text-xl font-bold">
                         {maso.growthPoints.toLocaleString("ja-JP")} pt
                       </span>
                     </div>
-                    <div className="mt-3 space-y-2">
-                      {(Object.keys(FOOD_ITEMS) as FoodKind[]).map((kind) => {
-                        const item = FOOD_ITEMS[kind];
-                        const balance = kind === "onigiri" ? maso.food : maso.protein;
-                        const canExchange =
-                          maso.growthPoints >= item.growthPointCost;
-
-                        return (
-                          <div
-                            key={kind}
-                            className="rounded-xl border border-ink/15 bg-white/45 p-4"
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <p className="font-bold">{item.name}</p>
-                                <p className="mt-1 text-xs text-muted">
-                                  1個で +{item.experience} XP
-                                </p>
-                                <p className="mt-1 text-[11px] font-bold text-muted">
-                                  所持 {balance}個
-                                </p>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => handleExchange(kind)}
-                                disabled={!canExchange || isMutating}
-                                className="min-h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
-                              >
-                                {item.growthPointCost} ptで交換
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <p className="mt-3 text-center text-[11px] text-muted">
-                      トレーニング記録で育成ポイントが増えます。
-                    </p>
-                  </>
-                ) : (
-                  <>
+                ) : null}
                     <fieldset className="mt-4">
-                      <legend className="text-xs font-bold">あげるアイテム</legend>
+                      <legend className="text-xs font-bold">
+                        {feedMode === "exchange" ? "交換するアイテム" : "あげるアイテム"}
+                      </legend>
                       <div className="mt-2 grid grid-cols-2 gap-2">
                         {(Object.keys(FOOD_ITEMS) as FoodKind[]).map((kind) => {
                           const item = FOOD_ITEMS[kind];
@@ -598,7 +592,10 @@ export function HomeDashboard({ today }: { today: string }) {
                             >
                               <span className="block text-sm font-bold">{item.name}</span>
                               <span className="mt-1 block text-[11px] text-muted">
-                                所持 {balance}個・+{item.experience} XP
+                                所持 {balance}個
+                                {feedMode === "exchange"
+                                  ? `・1個 ${item.growthPointCost} pt`
+                                  : `・+${item.experience} XP`}
                               </span>
                             </button>
                           );
@@ -617,83 +614,42 @@ export function HomeDashboard({ today }: { today: string }) {
                     </div>
 
                 {feedStep === "select" ? (
-                  <>
-                    <fieldset className="mt-4">
-                      <legend className="text-xs font-bold">あげる個数</legend>
-                      <div className="mt-2 grid grid-cols-[48px_1fr_48px] gap-2">
-                        <button
-                          type="button"
-                          onClick={() => changeFeedAmount(feedAmount - 1)}
-                          disabled={
-                            isMutating || selectedFoodBalance < 1 || feedAmount <= 1
-                          }
-                          aria-label="エサを1個減らす"
-                          className="grid min-h-12 place-items-center rounded-xl border border-ink/25 bg-white disabled:cursor-not-allowed disabled:opacity-35"
-                        >
-                          <Minus aria-hidden="true" size={18} />
-                        </button>
-                        <label className="relative">
-                          <span className="sr-only">あげるエサの個数</span>
-                          <input
-                            type="number"
-                            inputMode="numeric"
-                            min={1}
-                            max={Math.max(1, maxSelectableFood)}
-                            value={selectedFoodBalance > 0 ? feedAmount : 0}
-                            onChange={(event) =>
-                              changeFeedAmount(Number(event.target.value))
-                            }
-                            disabled={isMutating || selectedFoodBalance < 1}
-                            className="data-number min-h-12 w-full rounded-xl border border-ink/25 bg-white px-10 text-center text-xl font-bold disabled:bg-canvas disabled:text-muted"
-                          />
-                          <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-xs font-bold text-muted">
-                            個
-                          </span>
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() => changeFeedAmount(feedAmount + 1)}
-                          disabled={
-                            isMutating ||
-                            selectedFoodBalance < 1 ||
-                            feedAmount >= maxSelectableFood
-                          }
-                          aria-label="エサを1個増やす"
-                          className="grid min-h-12 place-items-center rounded-xl border border-ink/25 bg-white disabled:cursor-not-allowed disabled:opacity-35"
-                        >
-                          <Plus aria-hidden="true" size={18} />
-                        </button>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => changeFeedAmount(maxSelectableFood)}
-                        disabled={
-                          isMutating ||
-                          selectedFoodBalance < 1 ||
-                          feedAmount === maxSelectableFood
-                        }
-                        className="mt-2 min-h-11 w-full rounded-xl border border-ink/25 bg-white text-xs font-bold disabled:cursor-not-allowed disabled:opacity-35"
-                      >
-                        {selectedFoodBalance > MAX_ITEM_ACTION_AMOUNT
+                    <ItemQuantitySelector
+                      label={feedMode === "exchange" ? "交換する個数" : "あげる個数"}
+                      amount={feedAmount}
+                      maximum={maximumAmount}
+                      maximumLabel={feedMode === "exchange"
+                        ? `交換できる最大${maxSelectableExchange}個を選ぶ`
+                        : selectedFoodBalance > MAX_ITEM_ACTION_AMOUNT
                           ? `一度にあげられる最大${MAX_ITEM_ACTION_AMOUNT}個を選ぶ`
                           : `持っている${selectedFood.name}を全部選ぶ`}
-                      </button>
-                    </fieldset>
+                      disabled={isMutating}
+                      onChange={changeFeedAmount}
+                    />
+                ) : null}
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFeedStep("confirm");
-                        setMessage(null);
-                      }}
-                      disabled={isMutating || selectedFoodBalance < 1}
-                      className="mt-4 flex min-h-12 w-full items-center justify-center rounded-xl bg-accent px-5 font-bold text-white disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
-                    >
-                      {selectedFoodBalance > 0 ? "この個数で確認" : "交換してからあげる"}
-                    </button>
-                  </>
-                ) : (
-                  <>
+                {feedMode === "exchange" ? (
+                  <dl className="mt-4 divide-y divide-line rounded-xl border border-ink/15 bg-white/45 px-4">
+                    {feedStep === "confirm" ? (
+                      <div className="flex items-center justify-between gap-3 py-3">
+                        <dt className="text-xs font-bold text-muted">交換する個数</dt>
+                        <dd className="data-number text-lg font-bold">{feedAmount} 個</dd>
+                      </div>
+                    ) : null}
+                    <div className="flex items-center justify-between gap-3 py-3">
+                      <dt className="text-xs font-bold text-muted">使う育成ポイント</dt>
+                      <dd className="data-number text-lg font-bold">{exchangeCost.toLocaleString("ja-JP")} pt</dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 py-3">
+                      <dt className="text-xs font-bold text-muted">交換後のポイント</dt>
+                      <dd className="data-number text-lg font-bold">{Math.max(0, maso.growthPoints - exchangeCost).toLocaleString("ja-JP")} pt</dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 py-3">
+                      <dt className="text-xs font-bold text-muted">所持数 → 交換後</dt>
+                      <dd className="data-number text-lg font-bold">{selectedFoodBalance} → {selectedFoodBalance + (maximumAmount > 0 ? feedAmount : 0)} 個</dd>
+                    </div>
+                  </dl>
+                ) : feedStep === "confirm" ? (
                     <dl className="mt-4 divide-y divide-line rounded-xl border border-ink/15 bg-white/45 px-4">
                       <div className="flex items-center justify-between py-3">
                         <dt className="text-xs font-bold text-muted">あげる個数</dt>
@@ -714,6 +670,30 @@ export function HomeDashboard({ today }: { today: string }) {
                         </dd>
                       </div>
                     </dl>
+                ) : null}
+
+                {feedMode === "exchange" && maxSelectableExchange < 1 ? (
+                  <p className="mt-3 text-center text-xs text-muted">
+                    {selectedFood.name}1個の交換にはあと{Math.max(0, selectedFood.growthPointCost - maso.growthPoints)} pt必要です。
+                    トレーニング記録で育成ポイントが増えます。
+                  </p>
+                ) : feedMode === "exchange" && maxSelectableExchange === MAX_ITEM_ACTION_AMOUNT ? (
+                  <p className="mt-3 text-center text-[11px] text-muted">一度に交換できるのは{MAX_ITEM_ACTION_AMOUNT}個までです。</p>
+                ) : null}
+
+                {feedStep === "select" ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFeedStep("confirm");
+                      setMessage(null);
+                    }}
+                    disabled={isMutating || !canSubmitAmount}
+                    className="mt-4 flex min-h-12 w-full items-center justify-center rounded-xl bg-accent px-5 font-bold text-white disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
+                  >
+                    {maximumAmount > 0 ? "この個数で確認" : feedMode === "exchange" ? "育成ポイントが足りません" : "交換してからあげる"}
+                  </button>
+                ) : (
                     <div className="mt-4 grid grid-cols-[1fr_1.35fr] gap-2">
                       <button
                         type="button"
@@ -729,19 +709,16 @@ export function HomeDashboard({ today }: { today: string }) {
                       </button>
                       <button
                         type="button"
-                        onClick={handleFeed}
-                        disabled={isMutating}
+                        onClick={feedMode === "exchange" ? handleExchange : handleFeed}
+                        disabled={isMutating || !canSubmitAmount}
                         className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-accent px-3 text-sm font-bold text-white disabled:cursor-wait disabled:bg-line disabled:text-muted"
                       >
                         <Beef aria-hidden="true" size={18} />
                         {isMutating
                           ? "保存しています"
-                          : `${selectedFood.name}を${feedAmount}個あげる`}
+                          : `${selectedFood.name}を${feedAmount}個${feedMode === "exchange" ? "交換" : "あげる"}`}
                       </button>
                     </div>
-                  </>
-                )}
-                  </>
                 )}
                 {message ? (
                   <p aria-live="polite" className="mt-3 text-center text-xs font-bold">
@@ -837,6 +814,8 @@ export function HomeDashboard({ today }: { today: string }) {
                     </button>
                   </div>
                 </form>
+
+                <BgmSettings />
 
                 <Link
                   href="/login"

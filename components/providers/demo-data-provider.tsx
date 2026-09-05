@@ -17,7 +17,7 @@ import { dateKeyInTimeZone } from "@/lib/domain/date";
 import {
   applyExperience,
   FOOD_ITEMS,
-  MAX_ITEM_ACTION_AMOUNT,
+  isValidItemActionAmount,
   rewardsFromVolume,
   type FoodKind,
 } from "@/lib/domain/growth";
@@ -361,13 +361,14 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         return { ok: false, message: "保存データを確認できないため、交換できません。" };
       }
 
-      const exchangeAmount = Math.floor(amount);
+      if (!isValidItemActionAmount(amount)) {
+        return { ok: false, message: "交換する個数を確認してください。" };
+      }
+      const exchangeAmount = amount;
       const item = FOOD_ITEMS[kind];
       const totalCost = exchangeAmount * item.growthPointCost;
 
       if (
-        exchangeAmount < 1 ||
-        exchangeAmount > MAX_ITEM_ACTION_AMOUNT ||
         !Number.isSafeInteger(totalCost) ||
         state.maso.growthPoints < totalCost
       ) {
@@ -399,15 +400,14 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         return { ok: false, message: "保存データを確認できないため、エサを使えません。" };
       }
 
-      const useAmount = Math.floor(amount);
+      if (!isValidItemActionAmount(amount)) {
+        return { ok: false, message: "あげる個数を確認してください。" };
+      }
+      const useAmount = amount;
       const inventoryKey = kind === "onigiri" ? "food" : "protein";
       const item = FOOD_ITEMS[kind];
 
-      if (
-        useAmount < 1 ||
-        useAmount > MAX_ITEM_ACTION_AMOUNT ||
-        state.maso[inventoryKey] < useAmount
-      ) {
+      if (state.maso[inventoryKey] < useAmount) {
         return { ok: false, message: `${item.name}が足りません。育成ポイントと交換できます。` };
       }
 

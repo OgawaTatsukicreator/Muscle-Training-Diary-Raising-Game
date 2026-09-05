@@ -19,6 +19,31 @@ export const FOOD_ITEMS = {
 
 export type FoodKind = keyof typeof FOOD_ITEMS;
 
+export function maxExchangeAmount(growthPoints: number, kind: FoodKind): number {
+  if (!Number.isFinite(growthPoints) || growthPoints <= 0) {
+    return 0;
+  }
+
+  return Math.min(
+    MAX_ITEM_ACTION_AMOUNT,
+    Math.floor(growthPoints / FOOD_ITEMS[kind].growthPointCost),
+  );
+}
+
+export function clampItemActionAmount(amount: number, maximum: number): number {
+  const safeMaximum = Number.isFinite(maximum)
+    ? Math.max(1, Math.min(MAX_ITEM_ACTION_AMOUNT, Math.floor(maximum)))
+    : 1;
+  const safeAmount = Number.isFinite(amount) ? Math.floor(amount) : 1;
+  return Math.max(1, Math.min(safeAmount, safeMaximum));
+}
+
+export function isValidItemActionAmount(amount: number): boolean {
+  return (
+    Number.isInteger(amount) && amount >= 1 && amount <= MAX_ITEM_ACTION_AMOUNT
+  );
+}
+
 export function masoPhaseForLevel(level: number): number {
   if (!Number.isFinite(level)) {
     return 1;

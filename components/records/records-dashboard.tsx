@@ -13,6 +13,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
 
 import { StorageNotice } from "@/components/common/storage-notice";
+import { BgmSettings } from "@/components/audio/bgm-settings";
 import { useAppData } from "@/components/providers/app-data-provider";
 import {
   buildMonthGrid,
@@ -148,7 +149,7 @@ export function RecordsDashboard({
                 >
                   <Settings2 aria-hidden="true" size={19} />
                 </summary>
-                <div className="memo-sheet !top-14 !right-0 !bottom-auto !left-auto w-[min(86vw,330px)] p-5">
+                <div className="memo-sheet !top-14 !right-0 !bottom-auto !left-auto max-h-[65dvh] w-[min(86vw,330px)] overflow-y-auto p-5">
                   <p className="text-base font-semibold">記録の設定</p>
                   <label className="mt-4 block text-xs font-bold text-ink/65">
                     デフォルトセット数
@@ -190,6 +191,7 @@ export function RecordsDashboard({
                       ))}
                     </div>
                   </fieldset>
+                  <BgmSettings />
                   <dl className="mt-5 space-y-2 border-t border-ink/15 pt-4 text-xs">
                     <div className="flex justify-between gap-3">
                       <dt className="text-muted">app Ver</dt>

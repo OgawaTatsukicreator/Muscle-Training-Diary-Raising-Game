@@ -22,7 +22,7 @@ import {
   type MasoStatus,
 } from "@/components/providers/demo-data-provider";
 import { dateKeyInTimeZone } from "@/lib/domain/date";
-import { MAX_ITEM_ACTION_AMOUNT, type FoodKind } from "@/lib/domain/growth";
+import { isValidItemActionAmount, type FoodKind } from "@/lib/domain/growth";
 import {
   bodyPartSchema,
   exerciseSchema,
@@ -813,10 +813,8 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       }
       const operationUserId = authState.userId;
 
-      const exchangeAmount = Math.floor(amount);
       if (
-        exchangeAmount < 1 ||
-        exchangeAmount > MAX_ITEM_ACTION_AMOUNT ||
+        !isValidItemActionAmount(amount) ||
         !z.string().uuid().safeParse(clientRequestId).success
       ) {
         return cloudFailure("交換する個数を確認してください。");
@@ -824,7 +822,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
 
       const { data, error } = await supabase.rpc("exchange_food", {
         p_kind: kind,
-        p_amount: exchangeAmount,
+        p_amount: amount,
         p_request_id: clientRequestId,
         p_expected_user_id: authState.userId,
       });
@@ -846,6 +844,13 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("交換結果を確認できませんでした。ページを再読み込みしてください。");
       }
 
+      if (!result.data.created) {
+        const latest = await refreshCloudData();
+        return latest
+          ? { ok: true, data: latest.maso }
+          : cloudFailure("交換は完了していますが、最新の所持数を確認できませんでした。もう一度読み込んでください。");
+      }
+
       const nextMaso = {
         ...cloudState.maso,
         growthPoints: result.data.growthPoints,
@@ -861,6 +866,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       cloudReady,
       cloudState.maso,
       local,
+      refreshCloudData,
       supabase,
       usingLocal,
     ],
@@ -881,10 +887,8 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       }
       const operationUserId = authState.userId;
 
-      const useAmount = Math.floor(amount);
       if (
-        useAmount < 1 ||
-        useAmount > MAX_ITEM_ACTION_AMOUNT ||
+        !isValidItemActionAmount(amount) ||
         !z.string().uuid().safeParse(clientRequestId).success
       ) {
         return cloudFailure("あげる個数を確認してください。");
@@ -892,7 +896,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
 
       const { data, error } = await supabase.rpc("feed_maso_item", {
         p_kind: kind,
-        p_amount: useAmount,
+        p_amount: amount,
         p_request_id: clientRequestId,
         p_expected_user_id: authState.userId,
       });
@@ -914,6 +918,13 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("エサやりの結果を確認できませんでした。ページを再読み込みしてください。");
       }
 
+      if (!result.data.created) {
+        const latest = await refreshCloudData();
+        return latest
+          ? { ok: true, data: latest.maso }
+          : cloudFailure("エサやりは完了していますが、最新の状態を確認できませんでした。もう一度読み込んでください。");
+      }
+
       const nextMaso = {
         ...cloudState.maso,
         level: result.data.level,
@@ -930,6 +941,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       cloudReady,
       cloudState.maso,
       local,
+      refreshCloudData,
       supabase,
       usingLocal,
     ],

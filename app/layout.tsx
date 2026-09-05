@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 
 import { ConditionalBottomNavigation } from "@/components/home/navigation/bottom-navigation";
 import { AppDataProvider } from "@/components/providers/app-data-provider";
+import { BgmProvider } from "@/components/providers/bgm-provider";
+import { BgmControls } from "@/components/audio/bgm-controls";
 
 import "./globals.css";
 
@@ -22,10 +24,13 @@ export default function RootLayout({
   return (
     <html lang="ja" className="h-full antialiased">
       <body className="min-h-full">
-        <AppDataProvider>
-          {children}
-          <ConditionalBottomNavigation />
-        </AppDataProvider>
+        <BgmProvider>
+          <BgmControls />
+          <AppDataProvider>
+            {children}
+            <ConditionalBottomNavigation />
+          </AppDataProvider>
+        </BgmProvider>
       </body>
     </html>
   );
