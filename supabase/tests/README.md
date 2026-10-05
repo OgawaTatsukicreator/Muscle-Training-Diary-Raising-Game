@@ -20,12 +20,12 @@ node supabase/tests/account-isolation.mjs $isolationRuntime
 最後に次の表示が出れば成功です。失敗した場合は例外と終了コード1を返します。
 
 ```text
-PASS: 346 PostgreSQL execution checks; no remote database contacted.
+PASS: 355 PostgreSQL execution checks; no remote database contacted.
 ```
 
 ## 2026年10月5日の結果
 
-**346項目すべて成功。** PostgreSQL 18.3 / PGlite 0.5.8で、SQLの構文、権限、RLS、トリガー、PL/pgSQL関数を実行しました。既存の `supabase/migrations/*.test.ts` はSQL内の文字列を確認するテストですが、このスクリプトはSQLをDBエンジンへ適用し、成功・失敗・返却値・保存状態を確認しています。
+**355項目すべて成功。** PostgreSQL 18.3 / PGlite 0.5.8で、SQLの構文、権限、RLS、トリガー、PL/pgSQL関数を実行しました。既存の `supabase/migrations/*.test.ts` はSQL内の文字列を確認するテストですが、このスクリプトはSQLをDBエンジンへ適用し、成功・失敗・返却値・保存状態を確認しています。
 
 適用したファイルのSHA-256は次のとおりです。スクリプトは実行時にもハッシュを表示します。
 
@@ -38,6 +38,7 @@ PASS: 346 PostgreSQL execution checks; no remote database contacted.
 | `0005_name_filter.sql` | `fd896605fb619bcf4ebdec8287796cb4dbc45267ea34c274aaa91beeab33caaa` |
 | `0006_workout_edit_delete.sql` | `cc1f14f31470a9180327658718ec4f4924fb2a026f2278d00954c376312868bb` |
 | `0007_more_food_items.sql` | `5bdc6252f724dd29a96de15195a2fe48cd7341b109104a05ce5ae58bb98ea1c3` |
+| `0008_unconverted_cardio.sql` | `d8607406bb6066306e462b8726f584cc9f49511215b7d1f93e0e31c2a58c1db9` |
 
 2人の新規ユーザーA・Bと未ログインの `anon` を使い、既存ユーザー1人のmigration時の補完も確認しました。A・Bには同じリクエストIDを使い、アカウント間で記録や重複判定が混ざらないことを確認しています。
 
@@ -46,7 +47,7 @@ PASS: 346 PostgreSQL execution checks; no remote database contacted.
 | `profiles` | 自動作成、表示名の正規化（ゼロ幅文字・ハングル埋め字・点字空白などの除去）、`update_display_name` による変更、参照。見た目が空白になる名前の拒否、禁止ワードを含む名前の拒否（`name not allowed`）、列の直接更新の禁止 |
 | `user_settings` | 自動作成、セット数・単位の参照・変更 |
 | `exercises` | 61種目の自動作成（既存ユーザーへの補完とスクワット等の改名を含む）、ユーザー固有の種目ID、`add_exercise` による種目追加（部位による換算パターンの自動判定）、名前変更。直接のINSERTと換算パターンの変更は拒否 |
-| `workout_logs` | RPCによる記録作成、4つの換算パターン（自重・アシスト・秒数入力・lb換算）のボリューム計算、入力上限（500kg・200回・30セット・1記録5万kg）の拒否、参照 |
+| `workout_logs` | RPCによる記録作成、4つの換算パターン（自重・アシスト・秒数入力・lb換算）のボリューム計算、入力上限（500kg・200回・30セット・1記録5万kg）の拒否、有酸素の未換算（時間のみ・ボリューム0・ポイントなし・重量の無視・600分の上限・編集・削除・移行前の旧記録の編集）、参照 |
 | `body_weight_logs` | 1日1件の体重記録（`save_body_weight` と `save_workout` 経由）、直近体重の自動利用、参照 |
 | `maso_status` | 自動作成、ポイント付与、交換時の消費、給餌・レベルアップ・名前変更 |
 | `foods` | 自動作成、おにぎり・プロテインの交換・給餌・残数 |
