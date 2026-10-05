@@ -46,3 +46,24 @@ next-env.d.ts
 
 # generated character asset archive
 /public/maso/phases-50-svg.zip
+
+# local tool settings (Claude Code など。ローカルのパスや許可設定を含む)
+/.claude/
+
+# Supabase CLI local state (supabase link で作られるプロジェクト情報)
+/supabase/.temp/
+/supabase/.branches/
+
+# keys and certificates (*.pem は上で除外済み)
+*.key
+*.p12
+*.pfx
+
+# logs
+*.log
+
+# editor / OS files (OneDrive は desktop.ini を作る)
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
