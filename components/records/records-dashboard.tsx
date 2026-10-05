@@ -26,9 +26,9 @@ import {
 import {
   BODY_PART_LABELS,
   formatVolume,
-  formatWeight,
   type WeightUnit,
 } from "@/lib/domain/workout";
+import { describeRecordLoad } from "@/lib/domain/workout-load";
 
 const WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];
 
@@ -42,7 +42,7 @@ export function RecordsDashboard({
   showSavedMessage: boolean;
 }) {
   const router = useRouter();
-  const { records, settings, updateSettings, isReady, storageMode } = useAppData();
+  const { records, exercises, settings, updateSettings, isReady, storageMode } = useAppData();
   const savingSettingsRef = useRef(false);
   const initialDateObject = parseDateKey(initialDate);
   const [screen, setScreen] = useState<"calendar" | "day">(initialView);
@@ -407,7 +407,11 @@ export function RecordsDashboard({
                       </p>
                     </div>
                     <p className="mt-3 text-sm font-bold text-muted">
-                      {formatWeight(record.weightKg, settings.weightUnit)} × {record.reps}回 × {record.sets}セット
+                      {describeRecordLoad(
+                        record,
+                        exercises.find((item) => item.id === record.exerciseId),
+                        settings.weightUnit,
+                      )}
                     </p>
                     {record.memo ? (
                       <p className="mt-3 border-t border-line pt-3 text-sm leading-6 text-ink/75">

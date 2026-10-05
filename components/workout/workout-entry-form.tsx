@@ -18,33 +18,71 @@ import type { ZodError } from "zod";
 
 import { StorageNotice } from "@/components/common/storage-notice";
 import { useAppData } from "@/components/providers/app-data-provider";
+import { latestBodyWeightKg } from "@/lib/domain/body-weight";
 import {
   dateKeyInTimeZone,
   isDateKey,
 } from "@/lib/domain/date";
 import {
+  CALCULATION_PATTERN_LABELS,
+  customExerciseQuestion,
+  ISOMETRIC_SECONDS_PER_REP,
+  MAX_ISOMETRIC_SECONDS,
+  patternUsesBodyWeight,
+} from "@/lib/domain/load";
+import {
   BODY_PART_LABELS,
   BODY_PARTS,
-  calculateVolumeKg,
   formatVolume,
+  formatWeight,
   fromKilograms,
   MAX_REPS,
   MAX_SETS,
   MAX_WEIGHT_KG,
+  toKilograms,
   type BodyPart,
+  type Exercise,
   type WeightUnit,
   type WorkoutDraft,
   workoutDraftSchema,
 } from "@/lib/domain/workout";
+import { evaluateWorkoutDraft } from "@/lib/domain/workout-load";
 
 type FieldErrors = Partial<
-  Record<"workoutDate" | "exerciseId" | "weight" | "reps" | "sets" | "memo", string>
+  Record<
+    | "workoutDate"
+    | "exerciseId"
+    | "weight"
+    | "reps"
+    | "sets"
+    | "assist"
+    | "bodyWeightKg"
+    | "volume"
+    | "memo",
+    string
+  >
 >;
+
+const PATTERN_EXPLANATIONS = {
+  A: "重量 × 回数 × セット数で計算します",
+  B: "(体重 × 係数 + 追加重量) × 回数 × セット数で計算します",
+  C: "(体重 × 係数 + 追加重量) × 回数 × セット数で計算します",
+  D: "(体重 × 係数 + 追加重量 − アシスト) × 回数 × セット数で計算します",
+} as const;
 
 export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
   const router = useRouter();
-  const { exercises, settings, addExercise, addWorkout, isReady } = useAppData();
+  const {
+    exercises,
+    bodyWeights,
+    settings,
+    addExercise,
+    addWorkout,
+    saveBodyWeight,
+    isReady,
+  } = useAppData();
   const formRef = useRef<HTMLFormElement>(null);
+  const bodyWeightInputRef = useRef<HTMLInputElement>(null);
   const exerciseStepHeadingRef = useRef<HTMLHeadingElement>(null);
   const addingExerciseRef = useRef(false);
   const submittingRef = useRef(false);
@@ -60,8 +98,14 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
   const [unitOverride, setUnitOverride] = useState<WeightUnit | null>(null);
   const [reps, setReps] = useState("10");
   const [setsOverride, setSetsOverride] = useState<string | null>(null);
+  const [assist, setAssist] = useState("0");
+  const [bodyWeightInput, setBodyWeightInput] = useState<string | null>(null);
+  const [isSavingBodyWeight, setIsSavingBodyWeight] = useState(false);
+  const [bodyWeightNotice, setBodyWeightNotice] = useState<string | null>(null);
   const [memo, setMemo] = useState("");
   const [newExerciseName, setNewExerciseName] = useState("");
+  const [newExerciseUsesBodyweight, setNewExerciseUsesBodyweight] = useState(false);
+  const [newExerciseIsometric, setNewExerciseIsometric] = useState(false);
   const [newExerciseError, setNewExerciseError] = useState<string | null>(null);
   const [isAddingExercise, setIsAddingExercise] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -75,12 +119,41 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
   const unit = unitOverride ?? settings.weightUnit;
   const sets = setsOverride ?? String(settings.defaultSets);
   const maxWeight = unit === "kg" ? MAX_WEIGHT_KG : Math.floor(fromKilograms(MAX_WEIGHT_KG, "lb"));
-  const volume = calculateVolumeKg(
-    Number(weight),
+  const pattern = selectedExercise?.calculationPattern ?? "A";
+  const usesBodyWeight = patternUsesBodyWeight(pattern);
+  const isometric = selectedExercise?.isIsometric ?? false;
+  const bodyUnit = settings.weightUnit;
+  const recordedBodyWeight = bodyWeights.find((entry) => entry.date === workoutDate);
+  const lastBodyWeightKg = latestBodyWeightKg(bodyWeights, workoutDate);
+  const bodyWeightText =
+    bodyWeightInput ??
+    (recordedBodyWeight ? String(fromKilograms(recordedBodyWeight.weightKg, bodyUnit)) : "");
+  const typedBodyWeightKg =
+    bodyWeightText.trim() === ""
+      ? null
+      : toKilograms(Number(bodyWeightText), bodyUnit);
+  const categoryQuestion = customExerciseQuestion(bodyPart);
+  const draftInput = {
+    workoutDate,
+    exerciseId,
+    bodyPart,
+    weight: weight.trim() === "" ? Number.NaN : Number(weight),
     unit,
-    Number(reps),
-    Number(sets),
-  );
+    reps: Number(reps),
+    sets: Number(sets),
+    assist: assist.trim() === "" ? 0 : Number(assist),
+    bodyWeightKg: typedBodyWeightKg,
+    memo,
+  };
+  const previewDraft = workoutDraftSchema.safeParse(draftInput);
+  const evaluation =
+    previewDraft.success && selectedExercise
+      ? evaluateWorkoutDraft(previewDraft.data, selectedExercise, lastBodyWeightKg)
+      : null;
+  const volume = evaluation?.ok ? evaluation.value.volumeKg : 0;
+  const loadPerRepKg = evaluation?.ok
+    ? evaluation.value.loadPerUnitKg * (isometric ? ISOMETRIC_SECONDS_PER_REP : 1)
+    : null;
   const today = dateKeyInTimeZone();
 
   function selectBodyPart(nextBodyPart: BodyPart) {
@@ -89,8 +162,52 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
     setMessage(null);
   }
 
-  function selectExercise(nextExerciseId: string) {
-    setExerciseId(nextExerciseId);
+  function changeWorkoutDate(nextDate: string) {
+    setWorkoutDate(nextDate);
+    setBodyWeightInput(null);
+    setBodyWeightNotice(null);
+    setFieldErrors((current) => ({ ...current, bodyWeightKg: undefined }));
+  }
+
+  async function handleSaveBodyWeight() {
+    if (isSavingBodyWeight) {
+      return;
+    }
+
+    const value = Number(bodyWeightText);
+    if (bodyWeightText.trim() === "" || !Number.isFinite(value)) {
+      setFieldErrors((current) => ({
+        ...current,
+        bodyWeightKg: "体重を数字で入力してください",
+      }));
+      return;
+    }
+
+    setIsSavingBodyWeight(true);
+    const result = await saveBodyWeight(workoutDate, toKilograms(value, bodyUnit));
+    setIsSavingBodyWeight(false);
+
+    if (!result.ok) {
+      setFieldErrors((current) => ({ ...current, bodyWeightKg: result.message }));
+      setBodyWeightNotice(null);
+      return;
+    }
+
+    setFieldErrors((current) => ({ ...current, bodyWeightKg: undefined }));
+    setBodyWeightInput(null);
+    setBodyWeightNotice("体重を記録しました");
+  }
+
+  function selectExercise(nextExercise: Exercise) {
+    // 種目の種類が変わるときだけ、重量・回数の既定値を切り替える
+    if (patternUsesBodyWeight(nextExercise.calculationPattern) !== usesBodyWeight) {
+      setWeight(usesBodyWeight ? "50" : "0");
+    }
+    if (nextExercise.isIsometric !== isometric) {
+      setReps(nextExercise.isIsometric ? "60" : "10");
+    }
+
+    setExerciseId(nextExercise.id);
     setFieldErrors((current) => ({ ...current, exerciseId: undefined }));
     setMessage(null);
     setStep("details");
@@ -103,7 +220,10 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
 
     addingExerciseRef.current = true;
     setIsAddingExercise(true);
-    const result = await addExercise(newExerciseName, bodyPart);
+    const result = await addExercise(newExerciseName, bodyPart, {
+      usesBodyweight: categoryQuestion === "usesBodyweight" && newExerciseUsesBodyweight,
+      isIsometric: categoryQuestion === "isIsometric" && newExerciseIsometric,
+    });
     addingExerciseRef.current = false;
     setIsAddingExercise(false);
 
@@ -114,7 +234,9 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
 
     setNewExerciseError(null);
     setNewExerciseName("");
-    selectExercise(result.data.id);
+    setNewExerciseUsesBodyweight(false);
+    setNewExerciseIsometric(false);
+    selectExercise(result.data);
     setMessage(`${result.data.name}を種目に追加しました。`);
   }
 
@@ -128,13 +250,20 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
   }
 
   function focusFirstInvalidField(nextErrors: FieldErrors) {
-    if (nextErrors.exerciseId) {
+    // 体重の入力欄は種目選択の画面にあるため、そちらへ戻して案内する
+    const bodyWeightOnly = Boolean(nextErrors.bodyWeightKg);
+    if (nextErrors.exerciseId || bodyWeightOnly) {
       setStep("exercise");
     }
 
     window.requestAnimationFrame(() => {
       if (nextErrors.exerciseId) {
         exerciseStepHeadingRef.current?.focus();
+        return;
+      }
+
+      if (bodyWeightOnly) {
+        bodyWeightInputRef.current?.focus();
         return;
       }
 
@@ -151,17 +280,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
       return;
     }
 
-    const draft = {
-      workoutDate,
-      exerciseId,
-      bodyPart,
-      weight: weight.trim() === "" ? Number.NaN : Number(weight),
-      unit,
-      reps: Number(reps),
-      sets: Number(sets),
-      memo,
-    };
-    const parsed = workoutDraftSchema.safeParse(draft);
+    const parsed = workoutDraftSchema.safeParse(draftInput);
 
     if (!parsed.success) {
       const nextErrors = collectErrors(parsed.error);
@@ -282,7 +401,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                     type="date"
                     value={workoutDate}
                     max={today}
-                    onChange={(event) => setWorkoutDate(event.target.value)}
+                    onChange={(event) => changeWorkoutDate(event.target.value)}
                     className="mt-1 block min-h-11 w-full rounded-lg border border-line bg-white px-2 text-xs font-bold text-ink min-[360px]:w-auto"
                     aria-invalid={Boolean(fieldErrors.workoutDate)}
                     aria-describedby={fieldErrors.workoutDate ? "workout-date-error" : undefined}
@@ -294,6 +413,73 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                   {fieldErrors.workoutDate}
                 </p>
               ) : null}
+
+              <section
+                aria-labelledby="body-weight-label"
+                className="mt-5 rounded-xl border border-line bg-canvas/35 p-4"
+              >
+                <label
+                  id="body-weight-label"
+                  htmlFor="body-weight"
+                  className="flex items-center gap-2 text-xs font-bold text-muted"
+                >
+                  <Scale aria-hidden="true" size={15} />
+                  今日の体重（任意）
+                </label>
+                <div className="mt-2 flex gap-2">
+                  <div className="flex min-h-12 min-w-0 flex-1 overflow-hidden rounded-xl border border-line bg-white focus-within:border-ink">
+                    <input
+                      id="body-weight"
+                      ref={bodyWeightInputRef}
+                      type="number"
+                      inputMode="decimal"
+                      min="1"
+                      step="0.1"
+                      value={bodyWeightText}
+                      placeholder={
+                        lastBodyWeightKg !== null
+                          ? `前回 ${fromKilograms(lastBodyWeightKg, bodyUnit)}`
+                          : "例 65.0"
+                      }
+                      onChange={(event) => {
+                        setBodyWeightInput(event.target.value);
+                        setBodyWeightNotice(null);
+                        setFieldErrors((current) => ({ ...current, bodyWeightKg: undefined }));
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          void handleSaveBodyWeight();
+                        }
+                      }}
+                      className="data-number min-w-0 flex-1 bg-transparent px-3 text-lg font-bold outline-none"
+                      aria-invalid={Boolean(fieldErrors.bodyWeightKg)}
+                      aria-describedby="body-weight-hint"
+                    />
+                    <span className="grid place-items-center border-l border-line bg-canvas/60 px-3 text-xs font-bold text-muted">
+                      {bodyUnit}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveBodyWeight()}
+                    disabled={!isReady || isSavingBodyWeight}
+                    className="min-h-12 shrink-0 rounded-xl border border-ink bg-white px-4 text-xs font-bold hover:bg-canvas disabled:cursor-wait disabled:opacity-55"
+                  >
+                    {isSavingBodyWeight ? "記録中" : "記録"}
+                  </button>
+                </div>
+                <p id="body-weight-hint" className="mt-2 text-xs leading-5 text-muted">
+                  {bodyWeightNotice ??
+                    (recordedBodyWeight && bodyWeightInput === null
+                      ? "この日の体重は記録済みです。"
+                      : "自重を使う種目の計算に使います。未入力なら直近の体重を使います。")}
+                </p>
+                {fieldErrors.bodyWeightKg ? (
+                  <p role="alert" className="mt-2 text-xs font-bold text-accent-strong">
+                    {fieldErrors.bodyWeightKg}
+                  </p>
+                ) : null}
+              </section>
 
               <fieldset className="mt-5">
                 <legend className="sr-only">鍛えた部位</legend>
@@ -363,6 +549,37 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                         {isAddingExercise ? "追加中" : "追加"}
                       </button>
                     </div>
+                    {categoryQuestion === "usesBodyweight" ? (
+                      <label className="mt-3 flex items-start gap-2 text-xs leading-5">
+                        <input
+                          type="checkbox"
+                          checked={newExerciseUsesBodyweight}
+                          disabled={isAddingExercise}
+                          onChange={(event) => setNewExerciseUsesBodyweight(event.target.checked)}
+                          className="mt-0.5 size-4 shrink-0"
+                        />
+                        自重も使う種目（スクワット・ランジなど）
+                      </label>
+                    ) : null}
+                    {categoryQuestion === "isIsometric" ? (
+                      <label className="mt-3 flex items-start gap-2 text-xs leading-5">
+                        <input
+                          type="checkbox"
+                          checked={newExerciseIsometric}
+                          disabled={isAddingExercise}
+                          onChange={(event) => setNewExerciseIsometric(event.target.checked)}
+                          className="mt-0.5 size-4 shrink-0"
+                        />
+                        秒数で行う種目（プランクなど）
+                      </label>
+                    ) : null}
+                    <p className="mt-3 text-[11px] leading-5 text-muted">
+                      {bodyPart === "abs"
+                        ? "腹の種目は自重で計算します。"
+                        : bodyPart === "legs"
+                          ? "脚の種目は、自重を使うか選べます。"
+                          : "ウエイトの重量で計算します。"}
+                    </p>
                     {newExerciseError ? (
                       <p
                         id="new-exercise-error"
@@ -395,13 +612,13 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                     <li key={exercise.id}>
                       <button
                         type="button"
-                        onClick={() => selectExercise(exercise.id)}
+                        onClick={() => selectExercise(exercise)}
                         disabled={isAddingExercise}
                         className="flex min-h-24 w-full items-center justify-between gap-4 rounded-xl border border-line bg-white px-5 py-4 text-left transition-colors hover:border-ink hover:bg-canvas disabled:cursor-wait disabled:opacity-55"
                       >
                         <span>
                           <span className="block text-[10px] font-bold text-muted">
-                            {BODY_PART_LABELS[exercise.bodyPart]}
+                            {BODY_PART_LABELS[exercise.bodyPart]} · {CALCULATION_PATTERN_LABELS[exercise.calculationPattern]}
                           </span>
                           <span className="mt-1 block font-semibold">{exercise.name}</span>
                         </span>
@@ -449,7 +666,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                     type="date"
                     value={workoutDate}
                     max={today}
-                    onChange={(event) => setWorkoutDate(event.target.value)}
+                    onChange={(event) => changeWorkoutDate(event.target.value)}
                     className="mt-2 min-h-12 w-full rounded-lg border border-line bg-white px-3 text-sm font-bold text-ink"
                     aria-invalid={Boolean(fieldErrors.workoutDate)}
                     aria-describedby={fieldErrors.workoutDate ? "workout-date-error-details" : undefined}
@@ -468,22 +685,55 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                     Step 2
                   </p>
                   <h2 id="details-step-title" className="mt-1 text-lg font-semibold">
-                    重量・回数・セット数
+                    {isometric ? "重量・秒数・セット数" : "重量・回数・セット数"}
                   </h2>
                 </div>
+
+                {usesBodyWeight ? (
+                  <div className="mt-4 rounded-xl border border-line bg-white px-4 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="flex min-w-0 items-center gap-2 text-sm font-bold">
+                        <Scale aria-hidden="true" className="shrink-0 text-muted" size={16} />
+                        <span className="truncate">
+                          体重{" "}
+                          {typedBodyWeightKg !== null
+                            ? formatWeight(typedBodyWeightKg, bodyUnit)
+                            : lastBodyWeightKg !== null
+                              ? `${formatWeight(lastBodyWeightKg, bodyUnit)}（直近の記録）`
+                              : "未入力"}
+                        </span>
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStep("exercise");
+                          window.requestAnimationFrame(() => bodyWeightInputRef.current?.focus());
+                        }}
+                        className="min-h-11 shrink-0 rounded-lg border border-line px-3 text-xs font-bold hover:bg-canvas"
+                      >
+                        変更
+                      </button>
+                    </div>
+                    {fieldErrors.bodyWeightKg ? (
+                      <p role="alert" className="mt-2 text-xs font-bold text-accent-strong">
+                        {fieldErrors.bodyWeightKg}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 <div className="mt-4 grid gap-4 sm:grid-cols-3">
                   <div>
                     <label htmlFor="workout-weight" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
                       <Scale aria-hidden="true" size={15} />
-                      重量
+                      {usesBodyWeight ? "追加重量（なしなら0）" : "重量"}
                     </label>
                     <div className="flex min-h-14 overflow-hidden rounded-xl border border-line bg-white focus-within:border-ink">
                       <input
                         id="workout-weight"
                         type="number"
                         inputMode="decimal"
-                        min="0.1"
+                        min={usesBodyWeight ? "0" : "0.1"}
                         max={maxWeight}
                         step="0.1"
                         value={weight}
@@ -518,7 +768,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                   <div>
                     <label htmlFor="workout-reps" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
                       <Repeat2 aria-hidden="true" size={15} />
-                      回数
+                      {isometric ? "秒数" : "回数"}
                     </label>
                     <div className="flex min-h-14 items-center rounded-xl border border-line bg-white">
                       <input
@@ -526,7 +776,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                         type="number"
                         inputMode="numeric"
                         min="1"
-                        max={MAX_REPS}
+                        max={isometric ? MAX_ISOMETRIC_SECONDS : MAX_REPS}
                         step="1"
                         value={reps}
                         onChange={(event) => setReps(event.target.value)}
@@ -534,7 +784,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                         aria-invalid={Boolean(fieldErrors.reps)}
                         aria-describedby={fieldErrors.reps ? "reps-error" : undefined}
                       />
-                      <span className="pr-4 text-xs font-bold text-muted">回</span>
+                      <span className="pr-4 text-xs font-bold text-muted">{isometric ? "秒" : "回"}</span>
                     </div>
                     {fieldErrors.reps ? (
                       <p id="reps-error" className="mt-2 text-xs font-bold text-accent-strong">
@@ -572,6 +822,38 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                   </div>
                 </div>
 
+                {pattern === "D" ? (
+                  <div className="mt-4">
+                    <label htmlFor="workout-assist" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
+                      <Scale aria-hidden="true" size={15} />
+                      アシスト重量（マシンの補助・なしなら0）
+                    </label>
+                    <div className="flex min-h-14 overflow-hidden rounded-xl border border-line bg-white focus-within:border-ink">
+                      <input
+                        id="workout-assist"
+                        type="number"
+                        inputMode="decimal"
+                        min="0"
+                        max={maxWeight}
+                        step="0.1"
+                        value={assist}
+                        onChange={(event) => setAssist(event.target.value)}
+                        className="data-number min-w-0 flex-1 bg-transparent px-3 text-xl font-bold outline-none"
+                        aria-invalid={Boolean(fieldErrors.assist)}
+                        aria-describedby={fieldErrors.assist ? "assist-error" : undefined}
+                      />
+                      <span className="grid place-items-center border-l border-line bg-canvas/60 px-4 text-xs font-bold text-muted">
+                        {unit}
+                      </span>
+                    </div>
+                    {fieldErrors.assist ? (
+                      <p id="assist-error" className="mt-2 text-xs font-bold text-accent-strong">
+                        {fieldErrors.assist}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 <label htmlFor="workout-memo" className="mt-5 block">
                   <span className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
                     <StickyNote aria-hidden="true" size={15} />
@@ -607,9 +889,17 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                   <Dumbbell aria-hidden="true" className="shrink-0 text-muted" size={32} />
                 </div>
                 <p className="border-t border-ink/15 px-5 py-3 text-xs font-bold text-muted">
-                  重量 × 回数 × セット数をkgへ換算して自動計算
+                  {PATTERN_EXPLANATIONS[pattern]}
+                  {loadPerRepKg !== null && usesBodyWeight
+                    ? `（${isometric ? "10秒" : "1回"}あたり ${formatVolume(loadPerRepKg)}）`
+                    : ""}
                 </p>
               </section>
+              {fieldErrors.volume ? (
+                <p role="alert" className="text-sm font-bold text-accent-strong">
+                  {fieldErrors.volume}
+                </p>
+              ) : null}
 
               {message ? (
                 <p role="status" aria-live="polite" className="rounded-xl border border-line bg-white px-4 py-3 text-sm font-bold">
