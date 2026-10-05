@@ -13,6 +13,7 @@ import {
 import { z } from "zod";
 
 import { DEFAULT_EXERCISES } from "@/lib/data/default-exercises";
+import { defaultsForCustomExercise } from "@/lib/domain/load";
 import { dateKeyInTimeZone } from "@/lib/domain/date";
 import {
   applyExperience,
@@ -325,6 +326,7 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         name: normalizedName,
         bodyPart,
         isDefault: false,
+        ...defaultsForCustomExercise(bodyPart),
       };
 
       setState((current) => ({

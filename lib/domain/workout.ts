@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { isDateKey } from "@/lib/domain/date";
+import { CALCULATION_PATTERNS } from "@/lib/domain/load";
 
 export const BODY_PARTS = [
   "chest",
@@ -36,6 +37,10 @@ export const exerciseSchema = z
     name: z.string().trim().min(1).max(60),
     bodyPart: bodyPartSchema,
     isDefault: z.boolean(),
+    // 換算パターン導入前に保存された種目は外部ウエイトのみ(A)として扱う
+    calculationPattern: z.enum(CALCULATION_PATTERNS).default("A"),
+    bwRatio: z.number().min(0).max(1).default(0),
+    isIsometric: z.boolean().default(false),
   })
   .strict();
 
