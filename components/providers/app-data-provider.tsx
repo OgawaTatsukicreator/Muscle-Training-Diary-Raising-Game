@@ -1038,19 +1038,21 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       }
 
       // 換算パターンは部位と質問への回答からサーバー側で決まる
-      const { data, error } = await supabase.rpc("add_exercise", {
-        p_name: normalizedName,
-        p_body_part: bodyPart,
-        p_uses_bodyweight: options?.usesBodyweight === true,
-        p_is_isometric: options?.isIsometric === true,
-      });
+      const { data, error } = await settle(() =>
+        supabase.rpc("add_exercise", {
+          p_name: normalizedName,
+          p_body_part: bodyPart,
+          p_uses_bodyweight: options?.usesBodyweight === true,
+          p_is_isometric: options?.isIsometric === true,
+        }),
+      );
 
       if (activeUserIdRef.current !== operationUserId) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
       if (error) {
-        return cloudFailure("種目を追加できませんでした。同じ種目がないか確認してください。");
+        return cloudFailure(describeRpcError(error, "種目名"));
       }
 
       const row = addExerciseResultSchema.safeParse(data);
@@ -1109,17 +1111,19 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("未来日の体重は記録できません。");
       }
 
-      const { data, error } = await supabase.rpc("save_body_weight", {
-        p_log_date: parsed.data.date,
-        p_weight_kg: parsed.data.weightKg,
-      });
+      const { data, error } = await settle(() =>
+        supabase.rpc("save_body_weight", {
+          p_log_date: parsed.data.date,
+          p_weight_kg: parsed.data.weightKg,
+        }),
+      );
 
       if (activeUserIdRef.current !== operationUserId) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
       if (error) {
-        return cloudFailure("体重をクラウドへ保存できませんでした。もう一度お試しください。");
+        return cloudFailure(describeRpcError(error, "体重"));
       }
 
       const result = saveBodyWeightResultSchema.safeParse(data);
