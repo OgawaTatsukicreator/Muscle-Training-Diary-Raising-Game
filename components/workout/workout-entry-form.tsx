@@ -44,6 +44,7 @@ import {
   type Exercise,
   type WeightUnit,
   type WorkoutDraft,
+  type WorkoutRecord,
   workoutDraftSchema,
 } from "@/lib/domain/workout";
 import { evaluateWorkoutDraft } from "@/lib/domain/workout-load";
@@ -70,7 +71,17 @@ const PATTERN_EXPLANATIONS = {
   D: "(体重 × 係数 + 追加重量 − アシスト) × 回数 × セット数で計算します",
 } as const;
 
-export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
+/**
+ * 記録の入力フォーム。editing を渡すと、保存済みの記録を編集するモードになる。
+ * 編集では種目は変えられない(種目を変えるなら削除して記録し直す)。
+ */
+export function WorkoutEntryForm({
+  initialDate,
+  editing,
+}: {
+  initialDate: string;
+  editing?: WorkoutRecord;
+}) {
   const router = useRouter();
   const {
     exercises,
@@ -78,6 +89,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
     settings,
     addExercise,
     addWorkout,
+    updateWorkout,
     saveBodyWeight,
     isReady,
   } = useAppData();
@@ -90,19 +102,30 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
     payload: string;
     requestId: string;
   } | null>(null);
-  const [step, setStep] = useState<"exercise" | "details">("exercise");
+  // 編集のときの初期値は、設定の単位(kg/lb)に直して入力欄へ入れる
+  const [step, setStep] = useState<"exercise" | "details">(editing ? "details" : "exercise");
   const [workoutDate, setWorkoutDate] = useState(initialDate);
-  const [bodyPart, setBodyPart] = useState<BodyPart>("chest");
-  const [exerciseId, setExerciseId] = useState("");
-  const [weight, setWeight] = useState("50");
+  const [bodyPart, setBodyPart] = useState<BodyPart>(editing?.bodyPart ?? "chest");
+  const [exerciseId, setExerciseId] = useState(editing?.exerciseId ?? "");
+  const [weight, setWeight] = useState(
+    editing ? String(fromKilograms(editing.weightKg, settings.weightUnit)) : "50",
+  );
   const [unitOverride, setUnitOverride] = useState<WeightUnit | null>(null);
-  const [reps, setReps] = useState("10");
-  const [setsOverride, setSetsOverride] = useState<string | null>(null);
-  const [assist, setAssist] = useState("0");
-  const [bodyWeightInput, setBodyWeightInput] = useState<string | null>(null);
+  const [reps, setReps] = useState(editing ? String(editing.reps) : "10");
+  const [setsOverride, setSetsOverride] = useState<string | null>(
+    editing ? String(editing.sets) : null,
+  );
+  const [assist, setAssist] = useState(
+    editing ? String(fromKilograms(editing.assistKg, settings.weightUnit)) : "0",
+  );
+  const [bodyWeightInput, setBodyWeightInput] = useState<string | null>(
+    editing && editing.bodyWeightKg !== null
+      ? String(fromKilograms(editing.bodyWeightKg, settings.weightUnit))
+      : null,
+  );
   const [isSavingBodyWeight, setIsSavingBodyWeight] = useState(false);
   const [bodyWeightNotice, setBodyWeightNotice] = useState<string | null>(null);
-  const [memo, setMemo] = useState("");
+  const [memo, setMemo] = useState(editing?.memo ?? "");
   const [newExerciseName, setNewExerciseName] = useState("");
   const [newExerciseUsesBodyweight, setNewExerciseUsesBodyweight] = useState(false);
   const [newExerciseIsometric, setNewExerciseIsometric] = useState(false);
@@ -250,9 +273,9 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
   }
 
   function focusFirstInvalidField(nextErrors: FieldErrors) {
-    // 体重の入力欄は種目選択の画面にあるため、そちらへ戻して案内する
+    // 体重の入力欄は種目選択の画面にあるため、そちらへ戻して案内する(編集は詳細画面にある)
     const bodyWeightOnly = Boolean(nextErrors.bodyWeightKg);
-    if (nextErrors.exerciseId || bodyWeightOnly) {
+    if (!editing && (nextErrors.exerciseId || bodyWeightOnly)) {
       setStep("exercise");
     }
 
@@ -303,10 +326,9 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
       };
     }
 
-    const result = await addWorkout(
-      parsed.data,
-      pendingWorkoutRef.current.requestId,
-    );
+    const result = editing
+      ? await updateWorkout(editing.id, parsed.data, pendingWorkoutRef.current.requestId)
+      : await addWorkout(parsed.data, pendingWorkoutRef.current.requestId);
 
     if (!result.ok) {
       submittingRef.current = false;
@@ -319,20 +341,22 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
     }
 
     pendingWorkoutRef.current = null;
-    router.push(`/records?date=${encodeURIComponent(workoutDate)}&saved=1`);
+    router.push(
+      `/records?date=${encodeURIComponent(workoutDate)}&${editing ? "updated" : "saved"}=1`,
+    );
   }
 
   return (
     <main className="app-page--focused">
       <div className="mx-auto w-full">
         <p className="mb-4 text-sm font-semibold text-muted">
-          タップしてトレーニングを記録しよう
+          {editing ? "内容を直して保存してください" : "タップしてトレーニングを記録しよう"}
         </p>
 
         <header className="grid grid-cols-[44px_1fr_44px] items-center gap-3 border-y border-line py-3">
-          {step === "exercise" ? (
+          {editing || step === "exercise" ? (
             <Link
-              href={`/records?date=${encodeURIComponent(workoutDate)}`}
+              href={`/records?date=${encodeURIComponent(editing?.workoutDate ?? workoutDate)}`}
               aria-label="選択日の記録へ戻る"
               className="grid size-11 place-items-center rounded-full hover:bg-canvas"
             >
@@ -356,7 +380,11 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
               {isDateKey(workoutDate) ? workoutDate.replaceAll("-", "/") : "日付を選択"}
             </p>
             <h1 className="mt-0.5 truncate text-base font-semibold">
-              {step === "exercise" ? "種目を選択" : selectedExercise?.name ?? "数値を入力"}
+              {editing
+                ? "記録を編集"
+                : step === "exercise"
+                  ? "種目を選択"
+                  : selectedExercise?.name ?? "数値を入力"}
             </h1>
           </div>
           <span aria-hidden="true" />
@@ -651,13 +679,15 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                       {selectedExercise?.name}
                     </h2>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setStep("exercise")}
-                    className="min-h-11 shrink-0 rounded-lg border border-line bg-white px-3 text-xs font-bold"
-                  >
-                    選び直す
-                  </button>
+                  {editing ? null : (
+                    <button
+                      type="button"
+                      onClick={() => setStep("exercise")}
+                      className="min-h-11 shrink-0 rounded-lg border border-line bg-white px-3 text-xs font-bold"
+                    >
+                      選び直す
+                    </button>
+                  )}
                 </div>
                 <label htmlFor="workout-date" className="mt-4 block border-t border-line pt-3 text-xs font-bold text-muted">
                   トレーニング日
@@ -689,7 +719,45 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                   </h2>
                 </div>
 
-                {usesBodyWeight ? (
+                {usesBodyWeight && editing ? (
+                  <div className="mt-4">
+                    <label htmlFor="body-weight" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
+                      <Scale aria-hidden="true" size={15} />
+                      この日の体重
+                    </label>
+                    <div className="flex min-h-14 overflow-hidden rounded-xl border border-line bg-white focus-within:border-ink">
+                      <input
+                        id="body-weight"
+                        ref={bodyWeightInputRef}
+                        type="number"
+                        inputMode="decimal"
+                        min="1"
+                        step="0.1"
+                        value={bodyWeightText}
+                        placeholder={
+                          lastBodyWeightKg !== null
+                            ? `直近 ${fromKilograms(lastBodyWeightKg, bodyUnit)}`
+                            : "例 65.0"
+                        }
+                        onChange={(event) => {
+                          setBodyWeightInput(event.target.value);
+                          setFieldErrors((current) => ({ ...current, bodyWeightKg: undefined }));
+                        }}
+                        className="data-number min-w-0 flex-1 bg-transparent px-3 text-xl font-bold outline-none"
+                        aria-invalid={Boolean(fieldErrors.bodyWeightKg)}
+                        aria-describedby={fieldErrors.bodyWeightKg ? "body-weight-edit-error" : undefined}
+                      />
+                      <span className="grid place-items-center border-l border-line bg-canvas/60 px-4 text-xs font-bold text-muted">
+                        {bodyUnit}
+                      </span>
+                    </div>
+                    {fieldErrors.bodyWeightKg ? (
+                      <p id="body-weight-edit-error" role="alert" className="mt-2 text-xs font-bold text-accent-strong">
+                        {fieldErrors.bodyWeightKg}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : usesBodyWeight ? (
                   <div className="mt-4 rounded-xl border border-line bg-white px-4 py-3">
                     <div className="flex items-center justify-between gap-3">
                       <p className="flex min-w-0 items-center gap-2 text-sm font-bold">
@@ -913,7 +981,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                 className="flex min-h-14 w-full items-center justify-center gap-2 rounded-xl bg-accent px-6 py-4 text-base font-bold text-white shadow-[0_6px_0_var(--accent-shadow)] active:translate-y-1 active:shadow-none disabled:cursor-wait disabled:bg-line disabled:text-muted disabled:shadow-none"
               >
                 <Check aria-hidden="true" size={20} strokeWidth={3} />
-                {isSubmitting ? "保存しています" : "この記録を保存"}
+                {isSubmitting ? "保存しています" : editing ? "変更を保存" : "この記録を保存"}
               </button>
             </div>
           )}

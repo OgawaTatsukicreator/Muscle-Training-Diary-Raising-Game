@@ -34,6 +34,7 @@ import {
   FOOD_ITEMS,
   isValidItemActionAmount,
   rewardsFromVolume,
+  workoutRewardAdjustment,
   type FoodKind,
 } from "@/lib/domain/growth";
 import { evaluateWorkoutDraft } from "@/lib/domain/workout-load";
@@ -96,6 +97,15 @@ export type DemoDataContextValue = DemoDataState & {
     draft: WorkoutDraft,
     clientRequestId: string,
   ) => ActionResult<WorkoutRecord>;
+  updateWorkout: (
+    workoutId: string,
+    draft: WorkoutDraft,
+    clientRequestId: string,
+  ) => ActionResult<WorkoutRecord>;
+  deleteWorkout: (
+    workoutId: string,
+    clientRequestId: string,
+  ) => ActionResult<{ growthPointsDelta: number }>;
   addExercise: (
     name: string,
     bodyPart: BodyPart,
@@ -285,6 +295,7 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         bodyWeightKg,
         assistKg,
         loadPerUnitKg,
+        rewardPoints: rewardsFromVolume(volumeKg).growthPoints,
         memo: parsed.data.memo,
         createdAt: new Date().toISOString(),
       };
@@ -332,6 +343,164 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
       state.maso.growthPoints,
       state.records,
     ],
+  );
+
+  const updateWorkout = useCallback(
+    (
+      workoutId: string,
+      draft: WorkoutDraft,
+      clientRequestId: string,
+    ): ActionResult<WorkoutRecord> => {
+      void clientRequestId;
+
+      if (!canPersistRef.current) {
+        return {
+          ok: false,
+          message: "保存データを確認できないため、記録を変更できません。",
+        };
+      }
+
+      const parsed = workoutDraftSchema.safeParse(draft);
+
+      if (!parsed.success) {
+        return {
+          ok: false,
+          message: "入力内容を確認してください。",
+          fieldErrors: issueMap(parsed.error),
+        };
+      }
+
+      if (parsed.data.workoutDate > dateKeyInTimeZone()) {
+        return { ok: false, message: "未来日の記録はまだ保存できません。" };
+      }
+
+      const current = state.records.find((record) => record.id === workoutId);
+
+      if (!current) {
+        return {
+          ok: false,
+          message: "記録が見つかりませんでした。すでに削除された可能性があります。",
+        };
+      }
+
+      const exercise = state.exercises.find((item) => item.id === current.exerciseId);
+
+      if (!exercise) {
+        return {
+          ok: false,
+          message: "この記録の種目を確認できませんでした。",
+        };
+      }
+
+      const evaluation = evaluateWorkoutDraft(
+        parsed.data,
+        exercise,
+        latestBodyWeightKg(state.bodyWeights, parsed.data.workoutDate),
+      );
+
+      if (!evaluation.ok) {
+        return {
+          ok: false,
+          message: "入力内容を確認してください。",
+          fieldErrors: evaluation.fieldErrors,
+        };
+      }
+
+      const { weightKg, assistKg, bodyWeightKg, loadPerUnitKg, volumeKg } =
+        evaluation.value;
+      const adjustment = workoutRewardAdjustment({
+        granted: current.rewardPoints ?? rewardsFromVolume(current.volumeKg).growthPoints,
+        volumeKg,
+        balance: state.maso.growthPoints,
+      });
+      const nextGrowthPoints = state.maso.growthPoints + adjustment.applied;
+
+      if (!Number.isSafeInteger(nextGrowthPoints)) {
+        return {
+          ok: false,
+          message: "育成値が保存可能な上限を超えるため、この記録は保存できません。",
+        };
+      }
+
+      const updated: WorkoutRecord = {
+        ...current,
+        workoutDate: parsed.data.workoutDate,
+        weightKg,
+        reps: parsed.data.reps,
+        sets: parsed.data.sets,
+        volumeKg,
+        bodyWeightKg,
+        assistKg,
+        loadPerUnitKg,
+        rewardPoints: adjustment.granted,
+        memo: parsed.data.memo,
+      };
+
+      setState((latest) => {
+        if (!latest.records.some((record) => record.id === workoutId)) {
+          return latest;
+        }
+
+        return {
+          ...latest,
+          records: latest.records.map((record) =>
+            record.id === workoutId ? updated : record,
+          ),
+          bodyWeights:
+            parsed.data.bodyWeightKg === null
+              ? latest.bodyWeights
+              : upsertBodyWeight(latest.bodyWeights, {
+                  date: parsed.data.workoutDate,
+                  weightKg: parsed.data.bodyWeightKg,
+                }),
+          maso: { ...latest.maso, growthPoints: nextGrowthPoints },
+        };
+      });
+
+      return { ok: true, data: updated };
+    },
+    [state.bodyWeights, state.exercises, state.maso.growthPoints, state.records],
+  );
+
+  const deleteWorkout = useCallback(
+    (
+      workoutId: string,
+      clientRequestId: string,
+    ): ActionResult<{ growthPointsDelta: number }> => {
+      void clientRequestId;
+
+      if (!canPersistRef.current) {
+        return {
+          ok: false,
+          message: "保存データを確認できないため、記録を削除できません。",
+        };
+      }
+
+      const current = state.records.find((record) => record.id === workoutId);
+
+      if (!current) {
+        // すでに削除済み。同じ操作の再送として成功扱いにする
+        return { ok: true, data: { growthPointsDelta: 0 } };
+      }
+
+      const adjustment = workoutRewardAdjustment({
+        granted: current.rewardPoints ?? rewardsFromVolume(current.volumeKg).growthPoints,
+        volumeKg: 0,
+        balance: state.maso.growthPoints,
+      });
+
+      setState((latest) => ({
+        ...latest,
+        records: latest.records.filter((record) => record.id !== workoutId),
+        maso: {
+          ...latest.maso,
+          growthPoints: Math.max(0, latest.maso.growthPoints + adjustment.applied),
+        },
+      }));
+
+      return { ok: true, data: { growthPointsDelta: adjustment.applied } };
+    },
+    [state.maso.growthPoints, state.records],
   );
 
   const addExercise = useCallback(
@@ -553,6 +722,8 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
       isReady,
       storageIssue,
       addWorkout,
+      updateWorkout,
+      deleteWorkout,
       addExercise,
       saveBodyWeight,
       updateSettings,
@@ -564,6 +735,8 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
     [
       addExercise,
       addWorkout,
+      updateWorkout,
+      deleteWorkout,
       saveBodyWeight,
       clearLocalData,
       exchangeGrowthPoints,

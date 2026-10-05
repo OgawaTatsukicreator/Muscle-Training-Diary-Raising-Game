@@ -13,6 +13,7 @@ export default async function RecordsPage({
   searchParams: Promise<{
     date?: string | string[];
     saved?: string | string[];
+    updated?: string | string[];
   }>;
 }) {
   const params = await searchParams;
@@ -25,7 +26,9 @@ export default async function RecordsPage({
     <RecordsDashboard
       initialDate={initialDate}
       initialView={initialView}
-      showSavedMessage={params.saved === "1"}
+      notice={
+        params.saved === "1" ? "saved" : params.updated === "1" ? "updated" : null
+      }
     />
   );
 }

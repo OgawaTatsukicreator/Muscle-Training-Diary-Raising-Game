@@ -5,8 +5,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Dumbbell,
+  PencilLine,
   Plus,
   Settings2,
+  Trash2,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -35,15 +37,32 @@ const WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];
 export function RecordsDashboard({
   initialDate,
   initialView,
-  showSavedMessage,
+  notice,
 }: {
   initialDate: string;
   initialView: "calendar" | "day";
-  showSavedMessage: boolean;
+  notice: "saved" | "updated" | null;
 }) {
   const router = useRouter();
-  const { records, exercises, settings, updateSettings, isReady, storageMode } = useAppData();
+  const {
+    records,
+    exercises,
+    settings,
+    updateSettings,
+    deleteWorkout,
+    isReady,
+    storageMode,
+  } = useAppData();
   const savingSettingsRef = useRef(false);
+  const deletingRef = useRef(false);
+  // 通信が失敗して再試行しても二重に削除・減算されないよう、記録ごとに同じ要求IDを使う
+  const pendingDeleteIdsRef = useRef(new Map<string, string>());
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<{
+    tone: "success" | "error";
+    text: string;
+  } | null>(null);
   const initialDateObject = parseDateKey(initialDate);
   const [screen, setScreen] = useState<"calendar" | "day">(initialView);
   const [selectedDate, setSelectedDate] = useState(initialDate);
@@ -98,6 +117,42 @@ export function RecordsDashboard({
     router.replace(`/records?date=${encodeURIComponent(dateKey)}`, {
       scroll: false,
     });
+  }
+
+  async function handleDelete(recordId: string) {
+    if (deletingRef.current) {
+      return;
+    }
+
+    deletingRef.current = true;
+    setDeletingId(recordId);
+    setActionMessage(null);
+    const requestId =
+      pendingDeleteIdsRef.current.get(recordId) ?? crypto.randomUUID();
+    pendingDeleteIdsRef.current.set(recordId, requestId);
+
+    try {
+      const result = await deleteWorkout(recordId, requestId);
+
+      if (!result.ok) {
+        setActionMessage({ tone: "error", text: result.message });
+        return;
+      }
+
+      pendingDeleteIdsRef.current.delete(recordId);
+      setConfirmingDeleteId(null);
+      const delta = result.data.growthPointsDelta;
+      setActionMessage({
+        tone: "success",
+        text:
+          delta < 0
+            ? `記録を削除しました。育成ポイントが${Math.abs(delta).toLocaleString("ja-JP")}減りました。`
+            : "記録を削除しました。",
+      });
+    } finally {
+      deletingRef.current = false;
+      setDeletingId(null);
+    }
   }
 
   function showCalendar() {
@@ -339,13 +394,26 @@ export function RecordsDashboard({
               </Link>
             </header>
 
-            {showSavedMessage ? (
+            {notice && !actionMessage ? (
               <div
                 role="status"
                 className="mt-4 flex items-center gap-3 rounded-xl border border-accent/30 bg-accent-soft px-4 py-3 text-sm font-bold"
               >
                 <CalendarCheck2 aria-hidden="true" size={18} />
-                トレーニングを保存しました。
+                {notice === "updated" ? "記録を更新しました。" : "トレーニングを保存しました。"}
+              </div>
+            ) : null}
+
+            {actionMessage ? (
+              <div
+                role={actionMessage.tone === "error" ? "alert" : "status"}
+                className={`mt-4 flex items-center gap-3 rounded-xl border px-4 py-3 text-sm font-bold ${
+                  actionMessage.tone === "error"
+                    ? "border-accent-strong/40 bg-white text-accent-strong"
+                    : "border-accent/30 bg-accent-soft"
+                }`}
+              >
+                {actionMessage.text}
               </div>
             ) : null}
 
@@ -417,6 +485,56 @@ export function RecordsDashboard({
                       <p className="mt-3 border-t border-line pt-3 text-sm leading-6 text-ink/75">
                         {record.memo}
                       </p>
+                    ) : null}
+                    <div className="mt-3 flex items-center justify-end gap-2 border-t border-line pt-3">
+                      <Link
+                        href={`/records/${encodeURIComponent(record.id)}/edit`}
+                        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-line px-3 text-xs font-bold hover:bg-canvas"
+                      >
+                        <PencilLine aria-hidden="true" size={14} />
+                        編集
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActionMessage(null);
+                          setConfirmingDeleteId(record.id);
+                        }}
+                        disabled={deletingId !== null}
+                        aria-label={`${record.exerciseName}の記録を削除`}
+                        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-line px-3 text-xs font-bold text-accent-strong hover:bg-canvas disabled:cursor-wait disabled:opacity-55"
+                      >
+                        <Trash2 aria-hidden="true" size={14} />
+                        削除
+                      </button>
+                    </div>
+                    {confirmingDeleteId === record.id ? (
+                      <div role="alertdialog" aria-label="記録の削除の確認" className="mt-3 rounded-xl border border-accent-strong/40 bg-canvas/50 p-4">
+                        <p className="text-sm leading-6 font-bold">
+                          この記録を削除しますか？
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-muted">
+                          元に戻せません。この記録で得た育成ポイントも減ります（すでに使った分は戻りません）。
+                        </p>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setConfirmingDeleteId(null)}
+                            disabled={deletingId !== null}
+                            className="min-h-11 rounded-lg border border-line bg-white text-xs font-bold disabled:opacity-55"
+                          >
+                            キャンセル
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleDelete(record.id)}
+                            disabled={deletingId !== null}
+                            className="min-h-11 rounded-lg bg-accent-strong text-xs font-bold text-white disabled:cursor-wait disabled:bg-line disabled:text-muted"
+                          >
+                            {deletingId === record.id ? "削除中" : "削除する"}
+                          </button>
+                        </div>
+                      </div>
                     ) : null}
                   </li>
                 ))}

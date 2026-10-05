@@ -20,12 +20,12 @@ node supabase/tests/account-isolation.mjs $isolationRuntime
 最後に次の表示が出れば成功です。失敗した場合は例外と終了コード1を返します。
 
 ```text
-PASS: 297 PostgreSQL execution checks; no remote database contacted.
+PASS: 313 PostgreSQL execution checks; no remote database contacted.
 ```
 
 ## 2026年10月5日の結果
 
-**297項目すべて成功。** PostgreSQL 18.3 / PGlite 0.5.8で、SQLの構文、権限、RLS、トリガー、PL/pgSQL関数を実行しました。既存の `supabase/migrations/*.test.ts` はSQL内の文字列を確認するテストですが、このスクリプトはSQLをDBエンジンへ適用し、成功・失敗・返却値・保存状態を確認しています。
+**313項目すべて成功。** PostgreSQL 18.3 / PGlite 0.5.8で、SQLの構文、権限、RLS、トリガー、PL/pgSQL関数を実行しました。既存の `supabase/migrations/*.test.ts` はSQL内の文字列を確認するテストですが、このスクリプトはSQLをDBエンジンへ適用し、成功・失敗・返却値・保存状態を確認しています。
 
 適用したファイルのSHA-256は次のとおりです。スクリプトは実行時にもハッシュを表示します。
 
@@ -36,6 +36,7 @@ PASS: 297 PostgreSQL execution checks; no remote database contacted.
 | `0003_load_calculation.sql` | `fb91f1d2f4e8de519274df406b6423dd80e0739c65ebc93efccb3157c34718c7` |
 | `0004_display_name_normalization.sql` | `303ea34de18f6dc25c9e60a8b1a03b2eea5f288a67aec28cf797ff54f45d78a2` |
 | `0005_name_filter.sql` | `fd896605fb619bcf4ebdec8287796cb4dbc45267ea34c274aaa91beeab33caaa` |
+| `0006_workout_edit_delete.sql` | `cc1f14f31470a9180327658718ec4f4924fb2a026f2278d00954c376312868bb` |
 
 2人の新規ユーザーA・Bと未ログインの `anon` を使い、既存ユーザー1人のmigration時の補完も確認しました。A・Bには同じリクエストIDを使い、アカウント間で記録や重複判定が混ざらないことを確認しています。
 
@@ -48,7 +49,7 @@ PASS: 297 PostgreSQL execution checks; no remote database contacted.
 | `body_weight_logs` | 1日1件の体重記録（`save_body_weight` と `save_workout` 経由）、直近体重の自動利用、参照 |
 | `maso_status` | 自動作成、ポイント付与、交換時の消費、給餌・レベルアップ・名前変更 |
 | `foods` | 自動作成、2種類のエサの交換・給餌・残数 |
-| `reward_ledger` | 記録・給餌の台帳作成、参照 |
+| `reward_ledger` | 記録・給餌の台帳作成、記録の編集・削除による調整行（付与済みポイントの合計を基準に再計算し、使用済み分は0未満まで戻さない。下げて上げ直してもポイントを増やせない）、参照 |
 | `food_logs` | 種類別の給餌ログ作成、参照 |
 | `growth_logs` | レベルアップ時のログ作成、参照 |
 | `food_exchange_logs` | 交換ログ作成、参照 |

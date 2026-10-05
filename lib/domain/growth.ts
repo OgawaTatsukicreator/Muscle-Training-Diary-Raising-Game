@@ -69,6 +69,32 @@ export function rewardsFromVolume(volumeKg: number): {
   };
 }
 
+/**
+ * 記録の編集・削除で育成ポイントを調整する。DBの update_workout / delete_workout と同じ規則。
+ *
+ * - その記録に「実際に付与済み」のポイント(granted)を、新しいボリューム相当の値へ合わせる
+ *   (削除なら 0)。差分が正なら加算、負なら減算する。
+ * - すでに使ったポイントは取り戻せない。所持ポイントが0を下回らない範囲までしか減らさず、
+ *   実際に減らした分だけ granted を更新する。
+ * - 次回の調整は、計算式ではなく granted から始める。これにより、減らす→増やすを
+ *   繰り返してもポイントを水増しできない。
+ */
+export function workoutRewardAdjustment(input: {
+  /** この記録に付与済みのポイント */
+  granted: number;
+  /** 編集後のボリューム(kg)。削除は 0 */
+  volumeKg: number;
+  /** 現在の所持ポイント */
+  balance: number;
+}): { applied: number; granted: number; target: number } {
+  const target = rewardsFromVolume(input.volumeKg).growthPoints;
+  // `|| 0` で -0 を 0 にそろえる
+  const applied =
+    Math.max(target - input.granted, -Math.max(0, input.balance)) || 0;
+
+  return { applied, granted: input.granted + applied, target };
+}
+
 export function requiredExperienceForLevel(level: number): number {
   return Math.max(1, Math.floor(level)) * 100;
 }

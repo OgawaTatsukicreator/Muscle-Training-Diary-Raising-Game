@@ -35,6 +35,7 @@ import {
   storedNameSchema,
 } from "@/lib/domain/display-name";
 import { describeRpcError, settle } from "@/lib/errors/rpc-error";
+import { workoutFailure } from "@/lib/errors/workout-error";
 import { isValidItemActionAmount, type FoodKind } from "@/lib/domain/growth";
 import {
   CALCULATION_PATTERNS,
@@ -70,6 +71,15 @@ type AsyncDataActions = {
     draft: WorkoutDraft,
     clientRequestId: string,
   ) => Promise<ActionResult<WorkoutRecord>>;
+  updateWorkout: (
+    workoutId: string,
+    draft: WorkoutDraft,
+    clientRequestId: string,
+  ) => Promise<ActionResult<WorkoutRecord>>;
+  deleteWorkout: (
+    workoutId: string,
+    clientRequestId: string,
+  ) => Promise<ActionResult<{ growthPointsDelta: number }>>;
   addExercise: (
     name: string,
     bodyPart: BodyPart,
@@ -214,6 +224,22 @@ const saveWorkoutResultSchema = z.object({
   bodyWeightKg: nullableNumericSchema.optional(),
   growthPoints: z.number().int().min(0),
   food: z.number().int().min(0),
+  created: z.boolean(),
+});
+
+const updateWorkoutResultSchema = z.object({
+  id: z.string().uuid(),
+  volumeKg: z.coerce.number().finite().min(0),
+  loadPerUnitKg: z.coerce.number().finite().min(0),
+  bodyWeightKg: nullableNumericSchema.optional(),
+  growthPoints: z.number().int().min(0),
+  growthPointsDelta: z.number().int(),
+  created: z.boolean(),
+});
+
+const deleteWorkoutResultSchema = z.object({
+  id: z.string().uuid(),
+  growthPointsDelta: z.number().int(),
   created: z.boolean(),
 });
 
@@ -717,25 +743,28 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         };
       }
 
-      const { data, error } = await supabase.rpc("save_workout", {
-        p_exercise_id: parsed.data.exerciseId,
-        p_workout_date: parsed.data.workoutDate,
-        p_weight: parsed.data.weight,
-        p_unit: parsed.data.unit,
-        p_reps: parsed.data.reps,
-        p_sets: parsed.data.sets,
-        p_memo: parsed.data.memo,
-        p_request_id: clientRequestId,
-        p_body_weight_kg: parsed.data.bodyWeightKg,
-        p_assist: parsed.data.assist,
-      });
+      const { data, error } = await settle(() =>
+        supabase.rpc("save_workout", {
+          p_exercise_id: parsed.data.exerciseId,
+          p_workout_date: parsed.data.workoutDate,
+          p_weight: parsed.data.weight,
+          p_unit: parsed.data.unit,
+          p_reps: parsed.data.reps,
+          p_sets: parsed.data.sets,
+          p_memo: parsed.data.memo,
+          p_request_id: clientRequestId,
+          p_body_weight_kg: parsed.data.bodyWeightKg,
+          p_assist: parsed.data.assist,
+        }),
+      );
 
       if (activeUserIdRef.current !== operationUserId) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
       if (error) {
-        return cloudFailure("記録をクラウドへ保存できませんでした。入力内容と通信状態を確認してください。");
+        const failure = workoutFailure(error);
+        return { ok: false, message: failure.message, fieldErrors: failure.fieldErrors };
       }
 
       const result = saveWorkoutResultSchema.safeParse(data);
@@ -782,6 +811,156 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       supabase,
       usingLocal,
     ],
+  );
+
+  const updateWorkout = useCallback(
+    async (
+      workoutId: string,
+      draft: WorkoutDraft,
+      clientRequestId: string,
+    ): Promise<ActionResult<WorkoutRecord>> => {
+      if (usingLocal) {
+        return local.updateWorkout(workoutId, draft, clientRequestId);
+      }
+
+      if (!supabase || !authState.userId || !cloudReady) {
+        return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
+      }
+      const operationUserId = authState.userId;
+
+      const parsed = workoutDraftSchema.safeParse(draft);
+      if (!parsed.success) {
+        return {
+          ok: false,
+          message: "入力内容を確認してください。",
+          fieldErrors: fieldErrors(parsed.error),
+        };
+      }
+
+      if (parsed.data.workoutDate > dateKeyInTimeZone()) {
+        return cloudFailure("未来日の記録はまだ保存できません。");
+      }
+
+      const current = cloudState.records.find((record) => record.id === workoutId);
+      const exercise = current
+        ? cloudState.exercises.find((item) => item.id === current.exerciseId)
+        : undefined;
+      if (!current || !exercise) {
+        return cloudFailure(
+          "記録が見つかりませんでした。すでに削除された可能性があります。記録の一覧を開き直してください。",
+        );
+      }
+
+      const evaluation = evaluateWorkoutDraft(
+        parsed.data,
+        exercise,
+        latestBodyWeightKg(cloudState.bodyWeights, parsed.data.workoutDate),
+      );
+      if (!evaluation.ok) {
+        return {
+          ok: false,
+          message: "入力内容を確認してください。",
+          fieldErrors: evaluation.fieldErrors,
+        };
+      }
+
+      const { data, error } = await settle(() =>
+        supabase.rpc("update_workout", {
+          p_workout_id: workoutId,
+          p_workout_date: parsed.data.workoutDate,
+          p_weight: parsed.data.weight,
+          p_unit: parsed.data.unit,
+          p_reps: parsed.data.reps,
+          p_sets: parsed.data.sets,
+          p_memo: parsed.data.memo,
+          p_request_id: clientRequestId,
+          p_body_weight_kg: parsed.data.bodyWeightKg,
+          p_assist: parsed.data.assist,
+        }),
+      );
+
+      if (activeUserIdRef.current !== operationUserId) {
+        return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
+      }
+
+      if (error) {
+        const failure = workoutFailure(error);
+        return { ok: false, message: failure.message, fieldErrors: failure.fieldErrors };
+      }
+
+      const result = updateWorkoutResultSchema.safeParse(data);
+      if (!result.success) {
+        return cloudFailure("保存結果を確認できませんでした。ページを再読み込みしてください。");
+      }
+
+      // 育成ポイントなどの最新値はサーバーの結果が正本。取り直して画面へ反映する
+      const latest = await refreshCloudData();
+      const saved = latest?.records.find((record) => record.id === workoutId);
+
+      return saved
+        ? { ok: true, data: saved }
+        : cloudFailure(
+            "変更は保存されました。最新の内容を表示するにはページを再読み込みしてください。",
+          );
+    },
+    [
+      authState.userId,
+      cloudReady,
+      cloudState.bodyWeights,
+      cloudState.exercises,
+      cloudState.records,
+      local,
+      refreshCloudData,
+      supabase,
+      usingLocal,
+    ],
+  );
+
+  const deleteWorkout = useCallback(
+    async (
+      workoutId: string,
+      clientRequestId: string,
+    ): Promise<ActionResult<{ growthPointsDelta: number }>> => {
+      if (usingLocal) {
+        return local.deleteWorkout(workoutId, clientRequestId);
+      }
+
+      if (!supabase || !authState.userId || !cloudReady) {
+        return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
+      }
+      const operationUserId = authState.userId;
+
+      const { data, error } = await settle(() =>
+        supabase.rpc("delete_workout", {
+          p_workout_id: workoutId,
+          p_request_id: clientRequestId,
+        }),
+      );
+
+      if (activeUserIdRef.current !== operationUserId) {
+        return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
+      }
+
+      if (error) {
+        // すでに別の端末などで削除されていた場合は、一覧を最新にして成功として扱う
+        if (/workout not found/i.test(String((error as { message?: string }).message ?? ""))) {
+          await refreshCloudData();
+          return { ok: true, data: { growthPointsDelta: 0 } };
+        }
+
+        return cloudFailure(workoutFailure(error).message);
+      }
+
+      const result = deleteWorkoutResultSchema.safeParse(data);
+      if (!result.success) {
+        await refreshCloudData();
+        return cloudFailure("削除結果を確認できませんでした。記録の一覧を確認してください。");
+      }
+
+      await refreshCloudData();
+      return { ok: true, data: { growthPointsDelta: result.data.growthPointsDelta } };
+    },
+    [authState.userId, cloudReady, local, refreshCloudData, supabase, usingLocal],
   );
 
   const addExercise = useCallback(
@@ -1263,6 +1442,8 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       storageMode,
       retryStorage,
       addWorkout,
+      updateWorkout,
+      deleteWorkout,
       addExercise,
       saveBodyWeight,
       updateSettings,
@@ -1281,6 +1462,8 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       activeState.version,
       addExercise,
       addWorkout,
+      updateWorkout,
+      deleteWorkout,
       saveBodyWeight,
       clearLocalData,
       cloudReady,

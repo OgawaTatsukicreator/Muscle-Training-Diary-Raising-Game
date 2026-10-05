@@ -138,6 +138,9 @@ export const workoutRecordSchema = z
     bodyWeightKg: z.number().finite().min(0).nullable().default(null),
     assistKg: z.number().finite().min(0).default(0),
     loadPerUnitKg: z.number().finite().min(0).nullable().default(null),
+    // この端末(ローカル保存)で、この記録に付与済みの育成ポイント。null は
+    // 「ボリューム相当を付与済み」とみなす。クラウドでは報酬台帳が正本のため使わない。
+    rewardPoints: z.number().int().min(0).nullable().default(null),
     createdAt: z.string().datetime(),
   })
   .strict();

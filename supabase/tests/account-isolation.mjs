@@ -449,6 +449,136 @@ try {
     }
   });
 
+  // ---- Editing and deleting workouts (migration 0006).
+  const C = "77777777-7777-4777-8777-777777777777";
+  const D = "88888888-8888-4888-8888-888888888888";
+  await db.query("insert into auth.users (id) values ($1), ($2)", [C, D]);
+  const updateSql = "select public.update_workout($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) as result";
+  const deleteSql = "select public.delete_workout($1, $2) as result";
+  const pointsOf = async (user) => Number((await asUser(user, () => one("select growth_points from public.maso_status"))).growth_points);
+  const exerciseOf = async (user, key) => (await asUser(user, () => one("select id from public.exercises where master_key = $1", [key]))).id;
+  const editRequest = (n) => request(400 + n);
+  const edit = (user, workout, [date, weight, unit, reps, sets, bodyWeight = null, assist = 0], n, options = {}) =>
+    asUser(user, async () => (await one(updateSql, [workout, date, weight, unit, reps, sets, "", editRequest(n), bodyWeight, assist])).result, options);
+
+  const benchC = await exerciseOf(C, "default-bench-press");
+  const workoutC = (await asUser(C, () => one(saveFullSql, [benchC, "2026-02-01", 100, "kg", 10, 5, request(399), null, 0]), { commit: true })).result;
+  assert.equal(await pointsOf(C), 50);
+
+  await check("edit up grants the extra points and stores the new volume", async () => {
+    const result = await edit(C, workoutC.id, ["2026-02-01", 120, "kg", 10, 5], 1, { commit: true });
+    assert.equal(Number(result.volumeKg), 6000);
+    assert.equal(result.growthPointsDelta, 10);
+    assert.equal(result.growthPoints, 60);
+    assert.equal(result.created, true);
+    assert.equal(await pointsOf(C), 60);
+    const log = await asUser(C, () => one("select * from public.workout_logs where id = $1", [workoutC.id]));
+    assert.equal(Number(log.weight_kg), 120);
+    assert.equal(Number(log.volume_kg), 6000);
+    const ledger = await asUser(C, () => rows("select event_type, growth_points_delta from public.reward_ledger where workout_log_id = $1 order by created_at, growth_points_delta", [workoutC.id]));
+    assert.deepEqual(ledger.map((row) => [row.event_type, row.growth_points_delta]).sort(), [["workout_adjustment", 10], ["workout_reward", 50]]);
+  });
+  await check("replaying an edit does not apply it twice", async () => {
+    const result = await edit(C, workoutC.id, ["2026-02-01", 120, "kg", 10, 5], 1);
+    assert.equal(result.created, false);
+    assert.equal(result.growthPointsDelta, 10);
+    assert.equal(await pointsOf(C), 60);
+  });
+  await check("reusing an edit request id with other values is rejected", async () => {
+    await assert.rejects(() => edit(C, workoutC.id, ["2026-02-01", 90, "kg", 10, 5], 1), (error) => error.code === "22023");
+  });
+  await check("edit down takes the points back", async () => {
+    const result = await edit(C, workoutC.id, ["2026-02-01", 40, "kg", 10, 5], 2, { commit: true });
+    assert.equal(result.growthPointsDelta, -40);
+    assert.equal(await pointsOf(C), 20);
+  });
+  await check("points already spent are not taken back below zero", async () => {
+    await asUser(C, () => one(exchangeSql, ["onigiri", 4, request(410), C]), { commit: true });
+    assert.equal(await pointsOf(C), 0);
+    const result = await edit(C, workoutC.id, ["2026-02-01", 20, "kg", 10, 5], 3, { commit: true });
+    assert.equal(result.growthPointsDelta, 0);
+    assert.equal(result.growthPoints, 20);
+    assert.equal(await pointsOf(C), 0);
+  });
+  await check("editing down and back up cannot mint points", async () => {
+    const result = await edit(C, workoutC.id, ["2026-02-01", 40, "kg", 10, 5], 4, { commit: true });
+    assert.equal(result.growthPointsDelta, 0);
+    assert.equal(await pointsOf(C), 0);
+    const bigger = await edit(C, workoutC.id, ["2026-02-01", 100, "kg", 10, 5], 5, { commit: true });
+    assert.equal(bigger.growthPointsDelta, 30);
+    assert.equal(bigger.growthPoints, 50);
+    assert.equal(await pointsOf(C), 30);
+  });
+  await check("edit validation matches save_workout", async () => {
+    for (const [label, values] of [
+      ["zero weight on a weight-only exercise", ["2026-02-01", 0, "kg", 10, 5]],
+      ["weight over 500 kg", ["2026-02-01", 501, "kg", 1, 1]],
+      ["too many reps", ["2026-02-01", 20, "kg", 201, 1]],
+      ["too many sets", ["2026-02-01", 20, "kg", 10, 31]],
+      ["volume over 50,000 kg", ["2026-02-01", 200, "kg", 200, 2]],
+      ["a future date", ["2999-01-01", 50, "kg", 10, 3]],
+    ]) {
+      await assert.rejects(() => edit(C, workoutC.id, values, 50), (error) => error.code === "22023", label);
+    }
+    assert.equal(await pointsOf(C), 30);
+  });
+  await check("an edit that fails leaves the record and points unchanged", async () => {
+    const log = await asUser(C, () => one("select weight_kg, volume_kg from public.workout_logs where id = $1", [workoutC.id]));
+    assert.equal(Number(log.weight_kg), 100);
+    assert.equal(Number(log.volume_kg), 5000);
+  });
+  await check("a body-weight exercise is recomputed with the exercise pattern", async () => {
+    const pushUp = await exerciseOf(D, "default-push-up");
+    const saved = (await asUser(D, () => one(saveFullSql, [pushUp, "2026-02-02", 0, "kg", 20, 3, request(398), 70, 0]), { commit: true })).result;
+    assert.equal(Number(saved.volumeKg), 2688);
+    const edited = await edit(D, saved.id, ["2026-02-02", 0, "kg", 25, 3, 70], 6, { commit: true });
+    assert.equal(Number(edited.volumeKg), 3360);
+    assert.equal(Number(edited.loadPerUnitKg).toFixed(4), "44.8000");
+    assert.equal(Number(edited.bodyWeightKg), 70);
+    assert.equal(edited.growthPoints, 33);
+  });
+  await check("another account cannot edit or delete the workout", async () => {
+    for (const user of [A, B]) {
+      await assert.rejects(() => edit(user, workoutC.id, ["2026-02-01", 50, "kg", 10, 5], 60), (error) => error.code === "P0002");
+      await assert.rejects(() => asUser(user, () => one(deleteSql, [workoutC.id, request(420)])), (error) => error.code === "P0002");
+    }
+    assert.equal(Number((await asUser(C, () => one("select volume_kg from public.workout_logs where id = $1", [workoutC.id]))).volume_kg), 5000);
+  });
+  await check("anonymous callers cannot edit or delete", async () => {
+    await denied(null, updateSql, [workoutC.id, "2026-02-01", 50, "kg", 10, 5, "", request(421), null, 0]);
+    await denied(null, deleteSql, [workoutC.id, request(422)]);
+    await denied("", deleteSql, [workoutC.id, request(422)], "28000");
+  });
+  await check("delete removes the record's points but never below zero", async () => {
+    const before = Number((await asUser(C, () => one("select earned_from_volume from public.foods"))).earned_from_volume);
+    const result = await asUser(C, async () => (await one(deleteSql, [workoutC.id, request(430)])).result, { commit: true });
+    assert.equal(result.created, true);
+    assert.equal(result.growthPointsDelta, -30);
+    assert.equal(await pointsOf(C), 0);
+    const log = await asUser(C, () => one("select deleted_at from public.workout_logs where id = $1", [workoutC.id]));
+    assert.ok(log.deleted_at);
+    const after = Number((await asUser(C, () => one("select earned_from_volume from public.foods"))).earned_from_volume);
+    assert.equal(before - after, 5000);
+  });
+  await check("deleting twice is harmless and a deleted workout cannot be edited", async () => {
+    const again = await asUser(C, async () => (await one(deleteSql, [workoutC.id, request(431)])).result);
+    assert.equal(again.created, false);
+    assert.equal(again.growthPointsDelta, 0);
+    await assert.rejects(() => edit(C, workoutC.id, ["2026-02-01", 50, "kg", 10, 5], 61), (error) => error.code === "P0002");
+  });
+  await check("deleting a workout whose points were spent keeps the balance at zero", async () => {
+    const second = (await asUser(C, () => one(saveFullSql, [benchC, "2026-02-03", 100, "kg", 10, 5, request(397), null, 0]), { commit: true })).result;
+    assert.equal(await pointsOf(C), 50);
+    await asUser(C, () => one(exchangeSql, ["onigiri", 10, request(411), C]), { commit: true });
+    assert.equal(await pointsOf(C), 0);
+    const removed = await asUser(C, async () => (await one(deleteSql, [second.id, request(432)])).result, { commit: true });
+    assert.equal(removed.growthPointsDelta, 0);
+    assert.equal(await pointsOf(C), 0);
+  });
+  await check("the new RPCs have no arbitrary user parameter", () => denied(C,
+    "select public.delete_workout(p_workout_id => $1::uuid, p_request_id => $2::uuid, p_user_id => $3::uuid)",
+    [workoutC.id, request(433), A], "42883"));
+
   const beforeA = await snapshot(A);
   const beforeB = await snapshot(B);
 
