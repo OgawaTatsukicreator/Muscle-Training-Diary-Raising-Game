@@ -20,12 +20,12 @@ node supabase/tests/account-isolation.mjs $isolationRuntime
 最後に次の表示が出れば成功です。失敗した場合は例外と終了コード1を返します。
 
 ```text
-PASS: 288 PostgreSQL execution checks; no remote database contacted.
+PASS: 297 PostgreSQL execution checks; no remote database contacted.
 ```
 
 ## 2026年10月5日の結果
 
-**288項目すべて成功。** PostgreSQL 18.3 / PGlite 0.5.8で、SQLの構文、権限、RLS、トリガー、PL/pgSQL関数を実行しました。既存の `supabase/migrations/*.test.ts` はSQL内の文字列を確認するテストですが、このスクリプトはSQLをDBエンジンへ適用し、成功・失敗・返却値・保存状態を確認しています。
+**297項目すべて成功。** PostgreSQL 18.3 / PGlite 0.5.8で、SQLの構文、権限、RLS、トリガー、PL/pgSQL関数を実行しました。既存の `supabase/migrations/*.test.ts` はSQL内の文字列を確認するテストですが、このスクリプトはSQLをDBエンジンへ適用し、成功・失敗・返却値・保存状態を確認しています。
 
 適用したファイルのSHA-256は次のとおりです。スクリプトは実行時にもハッシュを表示します。
 
@@ -35,12 +35,13 @@ PASS: 288 PostgreSQL execution checks; no remote database contacted.
 | `0002_food_item_rpcs.sql` | `8d097b96f77c8cddfa85e930f5064c6e922d1b77b674498e4700f20b84c4a4ce` |
 | `0003_load_calculation.sql` | `fb91f1d2f4e8de519274df406b6423dd80e0739c65ebc93efccb3157c34718c7` |
 | `0004_display_name_normalization.sql` | `303ea34de18f6dc25c9e60a8b1a03b2eea5f288a67aec28cf797ff54f45d78a2` |
+| `0005_name_filter.sql` | `fd896605fb619bcf4ebdec8287796cb4dbc45267ea34c274aaa91beeab33caaa` |
 
 2人の新規ユーザーA・Bと未ログインの `anon` を使い、既存ユーザー1人のmigration時の補完も確認しました。A・Bには同じリクエストIDを使い、アカウント間で記録や重複判定が混ざらないことを確認しています。
 
 | 対象 | 自分のデータに対して確認した操作 |
 | --- | --- |
-| `profiles` | 自動作成、表示名の正規化（ゼロ幅文字・ハングル埋め字・点字空白などの除去）、`update_display_name` による変更、参照。見た目が空白になる名前の拒否と、列の直接更新の禁止 |
+| `profiles` | 自動作成、表示名の正規化（ゼロ幅文字・ハングル埋め字・点字空白などの除去）、`update_display_name` による変更、参照。見た目が空白になる名前の拒否、禁止ワードを含む名前の拒否（`name not allowed`）、列の直接更新の禁止 |
 | `user_settings` | 自動作成、セット数・単位の参照・変更 |
 | `exercises` | 61種目の自動作成（既存ユーザーへの補完とスクワット等の改名を含む）、ユーザー固有の種目ID、`add_exercise` による種目追加（部位による換算パターンの自動判定）、名前変更。直接のINSERTと換算パターンの変更は拒否 |
 | `workout_logs` | RPCによる記録作成、4つの換算パターン（自重・アシスト・秒数入力・lb換算）のボリューム計算、入力上限（500kg・200回・30セット・1記録5万kg）の拒否、参照 |

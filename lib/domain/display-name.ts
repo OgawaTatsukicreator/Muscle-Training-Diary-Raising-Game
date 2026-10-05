@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+import {
+  isNameAllowed,
+  NAME_NOT_ALLOWED_MESSAGE,
+} from "@/lib/domain/name-filter";
+
 /**
  * ユーザーが付ける名前（アカウントの表示名・マソ君の名前）の正規化と検証。
  *
@@ -29,12 +34,17 @@ const INVISIBLE_PATTERN = new RegExp(`[${INVISIBLE_CHARACTERS}]`, "g");
 const WHITESPACE_PATTERN = new RegExp(`[${WHITESPACE_CHARACTERS}]+`, "g");
 const VISIBLE_PATTERN = /[\p{L}\p{N}\p{S}\p{P}]/u;
 
-export type DisplayNameProblem = "empty" | "invisible" | "too-long";
+export type DisplayNameProblem =
+  | "empty"
+  | "invisible"
+  | "too-long"
+  | "not-allowed";
 
 export const DISPLAY_NAME_MESSAGES: Record<DisplayNameProblem, string> = {
   empty: "名前を入力してください。",
   invisible: "文字が見えない名前は使えません。文字・数字・記号を入れてください。",
   "too-long": `名前は${NAME_MAX_LENGTH}文字以内で入力してください。`,
+  "not-allowed": NAME_NOT_ALLOWED_MESSAGE,
 };
 
 /** 見えない文字を除き、空白を1つにまとめて前後を削る。 */
@@ -54,7 +64,14 @@ export type DisplayNameResult =
   | { ok: true; name: string }
   | { ok: false; problem: DisplayNameProblem; message: string };
 
-export function validateDisplayName(input: string): DisplayNameResult {
+/**
+ * @param options.filter 禁止ワードも判定する(既定)。保存済みの値を表示する場合など、
+ *   形式だけを見たいときは false にする。
+ */
+export function validateDisplayName(
+  input: string,
+  options: { filter?: boolean } = {},
+): DisplayNameResult {
   const name = normalizeDisplayName(input);
   let problem: DisplayNameProblem | null = null;
 
@@ -65,6 +82,8 @@ export function validateDisplayName(input: string): DisplayNameResult {
     problem = "invisible";
   } else if (displayNameLength(name) > NAME_MAX_LENGTH) {
     problem = "too-long";
+  } else if (options.filter !== false && !isNameAllowed(name)) {
+    problem = "not-allowed";
   }
 
   return problem === null
@@ -80,7 +99,7 @@ export function displayNameOrDefault(
   stored: string | null | undefined,
   fallback: string,
 ): string {
-  const result = validateDisplayName(stored ?? "");
+  const result = validateDisplayName(stored ?? "", { filter: false });
   if (result.ok) {
     return result.name;
   }

@@ -1,0 +1,15 @@
+{
+  "_note": "名前フィルターの語彙。contains は正規化後の文字列(ひらがな・小文字英数・漢字)に含まれていれば拒否、tokens は英数字の単語として一致したときだけ拒否する。語は name-filter.ts の toSkeleton() を通した形(カタカナはひらがな)で書く。変更したら scripts/generate-name-filter-sql.mjs でSQLを作り直して新しいマイグレーションに入れる。",
+  "contains": {
+    "abuse": ["死ね", "殺す", "殺せ", "ぶっ殺", "ころすぞ", "自殺", "fuck", "shit", "bitch", "bastard", "asshole", "motherfucker", "dickhead", "whore", "slut"],
+    "sexual": ["ちんこ", "ちんぽ", "まんこ", "せっくす", "おなにー", "ふぇらちお", "中出し", "強姦", "れいぷ", "ぽるの", "やりまん", "porn", "penis", "vagina", "pussy", "rapist"],
+    "discrimination": ["きちがい", "気違い", "池沼", "かたわ", "nigger", "nigga", "faggot", "cunt", "nazi", "hitler"],
+    "reserved": ["運営", "管理人", "管理者", "事務局", "公式", "開発者", "administrator", "moderator"]
+  },
+  "tokens": {
+    "abuse": ["ass", "dick", "cock", "tits"],
+    "sexual": ["sex", "rape", "anal", "nsfw", "xxx", "porno"],
+    "discrimination": ["kkk", "fag"],
+    "reserved": ["admin", "official", "staff", "support", "system", "owner", "mod", "root"]
+  }
+}

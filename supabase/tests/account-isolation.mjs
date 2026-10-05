@@ -407,6 +407,48 @@ try {
     await assert.rejects(() => one("select public.add_exercise($1, 'chest')", ["\u3164"]), (error) => error.code === "22023");
   }));
 
+  // ---- Name filter (migration 0005). Cases mirror lib/domain/name-filter.test.ts.
+  const allowedNames = ["マソ君", "トレーニー", "Alice", "ゴリラ💪", "Class of 2026", "Passage", "Assistant", "Sussex", "Essex Boy", "Hancock", "Dickens", "ころころ", "ケーキ", "システム工学"];
+  const blockedNames = ["死ね", "死 ✕ ね", "おまえなんか殺す", "fuck", "ＦＵＣＫ", "5h1t", "f.u.c.k", "チンコ", "ﾁﾝｺ", "きちがい", "気違い", "nazi", "運営スタッフ", "Official Account", "admin", "@dm1n", "sex", "gym sex", "big ass", "FuCk"];
+  await check("is_name_allowed accepts ordinary names, including look-alike substrings", async () => {
+    for (const name of allowedNames) {
+      assert.equal((await one("select public.is_name_allowed($1) as value", [name])).value, true, name);
+    }
+  });
+  await check("is_name_allowed rejects blocked words in every spelling the client rejects", async () => {
+    for (const name of blockedNames) {
+      assert.equal((await one("select public.is_name_allowed($1) as value", [name])).value, false, name);
+    }
+  });
+  await check("name_skeleton folds width, case, kana, digits and separators", async () => {
+    const cases = [["ＦＵＣＫ", "fuck"], ["ﾁﾝｺ", "ちんこ"], ["f.u-c k", "fuck"], ["死 ✕ ね", "死ね"], ["5h1t", "shit"], ["おなにー", "おなにー"], ["マソ💪君", "まそ君"]];
+    for (const [input, expected] of cases) {
+      assert.equal((await one("select public.name_skeleton($1) as value", [input])).value, expected, input);
+    }
+  });
+  for (const user of [A, B]) {
+    await check(`${user[0]} cannot save a blocked mascot name or display name`, async () => {
+      for (const bad of ["fuck", "5h1t", "死ね", "運営", "admin"]) {
+        await assert.rejects(() => asUser(user, () => one(renameSql, [bad, user])), (error) => error.code === "22023" && error.message === "name not allowed", bad);
+        await assert.rejects(() => asUser(user, () => one("select public.update_display_name($1)", [bad])), (error) => error.code === "22023" && error.message === "name not allowed", bad);
+      }
+    });
+    await check(`${user[0]} can still save an ordinary name after rejections`, () => asUser(user, async () => {
+      assert.equal((await one(renameSql, ["Sussex", user])).result.name, "Sussex");
+      assert.equal((await one("select public.update_display_name('Passage') as result")).result.displayName, "Passage");
+    }, { commit: true }));
+  }
+  await check("sign-up with a blocked display name falls back to the default instead of failing", async () => {
+    await db.exec("begin");
+    try {
+      const probe = "66666666-6666-4666-8666-666666666666";
+      await db.query("insert into auth.users (id, raw_user_meta_data) values ($1, $2)", [probe, { display_name: "f.u.c.k" }]);
+      assert.equal((await one("select display_name from public.profiles where id = $1", [probe])).display_name, "トレーニー");
+    } finally {
+      await db.exec("rollback");
+    }
+  });
+
   const beforeA = await snapshot(A);
   const beforeB = await snapshot(B);
 
