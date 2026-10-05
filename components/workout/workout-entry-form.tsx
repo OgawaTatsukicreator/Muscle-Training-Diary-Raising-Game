@@ -27,6 +27,10 @@ import {
   BODY_PARTS,
   calculateVolumeKg,
   formatVolume,
+  fromKilograms,
+  MAX_REPS,
+  MAX_SETS,
+  MAX_WEIGHT_KG,
   type BodyPart,
   type WeightUnit,
   type WorkoutDraft,
@@ -70,6 +74,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
   const selectedExercise = exercises.find((exercise) => exercise.id === exerciseId);
   const unit = unitOverride ?? settings.weightUnit;
   const sets = setsOverride ?? String(settings.defaultSets);
+  const maxWeight = unit === "kg" ? MAX_WEIGHT_KG : Math.floor(fromKilograms(MAX_WEIGHT_KG, "lb"));
   const volume = calculateVolumeKg(
     Number(weight),
     unit,
@@ -240,7 +245,21 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
 
         <StorageNotice />
 
-        <form ref={formRef} onSubmit={handleSubmit} noValidate>
+        <form
+          ref={formRef}
+          onSubmit={handleSubmit}
+          onKeyDown={(event) => {
+            // Enterでの意図しない保存を防ぐ。保存は「この記録を保存」ボタンのみ。
+            if (
+              event.key === "Enter" &&
+              event.target instanceof HTMLInputElement &&
+              event.target.type !== "submit"
+            ) {
+              event.preventDefault();
+            }
+          }}
+          noValidate
+        >
           {step === "exercise" ? (
             <section className="mt-5" aria-labelledby="exercise-step-title">
               <div className="flex flex-col items-stretch gap-3 min-[360px]:flex-row min-[360px]:items-center min-[360px]:justify-between">
@@ -464,8 +483,8 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                         id="workout-weight"
                         type="number"
                         inputMode="decimal"
-                        min="0"
-                        max="2000"
+                        min="0.1"
+                        max={maxWeight}
                         step="0.1"
                         value={weight}
                         onChange={(event) => setWeight(event.target.value)}
@@ -507,7 +526,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                         type="number"
                         inputMode="numeric"
                         min="1"
-                        max="1000"
+                        max={MAX_REPS}
                         step="1"
                         value={reps}
                         onChange={(event) => setReps(event.target.value)}
@@ -535,7 +554,7 @@ export function WorkoutEntryForm({ initialDate }: { initialDate: string }) {
                         type="number"
                         inputMode="numeric"
                         min="1"
-                        max="100"
+                        max={MAX_SETS}
                         step="1"
                         value={sets}
                         onChange={(event) => setSetsOverride(event.target.value)}

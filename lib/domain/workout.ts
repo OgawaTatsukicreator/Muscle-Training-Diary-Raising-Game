@@ -41,6 +41,11 @@ export const exerciseSchema = z
 
 export type Exercise = z.infer<typeof exerciseSchema>;
 
+// 入力時の現実的な上限。DB/既存データの許容範囲(2000kg/1000回/100set)より厳しい。
+export const MAX_WEIGHT_KG = 500;
+export const MAX_REPS = 200;
+export const MAX_SETS = 30;
+
 export const workoutDraftSchema = z
   .object({
     workoutDate: z.string().refine(isDateKey, "日付を確認してください"),
@@ -49,14 +54,33 @@ export const workoutDraftSchema = z
     weight: z
       .number({ error: "重量を入力してください" })
       .finite()
-      .min(0, "重量は0以上で入力してください")
-      .max(2000),
+      .gt(0, "重量は0より大きい値を入力してください"),
     unit: weightUnitSchema,
-    reps: z.number().int().min(1, "回数は1以上で入力してください").max(1000),
-    sets: z.number().int().min(1, "セット数は1以上で入力してください").max(100),
+    reps: z
+      .number()
+      .int("回数は整数で入力してください")
+      .min(1, "回数は1以上で入力してください")
+      .max(MAX_REPS, `回数は${MAX_REPS}回以内で入力してください`),
+    sets: z
+      .number()
+      .int("セット数は整数で入力してください")
+      .min(1, "セット数は1以上で入力してください")
+      .max(MAX_SETS, `セット数は${MAX_SETS}セット以内で入力してください`),
     memo: z.string().trim().max(500, "メモは500文字以内で入力してください"),
   })
-  .strict();
+  .strict()
+  .superRefine((draft, context) => {
+    if (
+      Number.isFinite(draft.weight) &&
+      toKilograms(draft.weight, draft.unit) > MAX_WEIGHT_KG
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["weight"],
+        message: `重量は${MAX_WEIGHT_KG}kg(${Math.floor(fromKilograms(MAX_WEIGHT_KG, "lb"))}lb)以内で入力してください`,
+      });
+    }
+  });
 
 export type WorkoutDraft = z.infer<typeof workoutDraftSchema>;
 

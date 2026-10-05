@@ -52,6 +52,35 @@ describe("workout calculations", () => {
   });
 });
 
+describe("workout draft realism limits", () => {
+  const base = {
+    workoutDate: "2026-07-17",
+    exerciseId: "bench-press",
+    bodyPart: "chest" as const,
+    weight: 50,
+    unit: "kg" as const,
+    reps: 10,
+    sets: 3,
+    memo: "",
+  };
+
+  it("accepts a normal workout", () => {
+    expect(workoutDraftSchema.safeParse(base).success).toBe(true);
+  });
+
+  it.each([
+    ["zero weight", { weight: 0 }],
+    ["negative weight", { weight: -5 }],
+    ["over 500kg", { weight: 501 }],
+    ["over 500kg in lb", { weight: 1200, unit: "lb" as const }],
+    ["too many reps", { reps: 201 }],
+    ["too many sets", { sets: 31 }],
+    ["fractional reps", { reps: 10.5 }],
+  ])("rejects %s", (_name, override) => {
+    expect(workoutDraftSchema.safeParse({ ...base, ...override }).success).toBe(false);
+  });
+});
+
 describe("growth calculations", () => {
   it("maps mascot levels to the 50 available body phases", () => {
     expect(masoPhaseForLevel(1)).toBe(1);
