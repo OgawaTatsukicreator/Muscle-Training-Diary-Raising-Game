@@ -34,6 +34,34 @@ describe("registrationCredentialsSchema", () => {
     });
   });
 
+  it("removes invisible characters from the display name", () => {
+    expect(
+      registrationCredentialsSchema.parse({
+        ...validCredentials,
+        displayName: "ト\u200bレ\u3000ーニー",
+      }).displayName,
+    ).toBe("トレ ーニー");
+  });
+
+  it.each([
+    ["", "表示名を入力してください。"],
+    ["   ", "表示名を入力してください。"],
+    ["\u3164", "文字が見えない名前は使えません。文字・数字・記号を入れてください。"],
+    ["\u200b\u200b", "文字が見えない名前は使えません。文字・数字・記号を入れてください。"],
+    ["あ".repeat(31), "表示名は30文字以内で入力してください。"],
+  ])("rejects the unusable display name %j", (displayName, message) => {
+    const result = registrationCredentialsSchema.safeParse({
+      ...validCredentials,
+      displayName,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]).toMatchObject({
+      path: ["displayName"],
+      message,
+    });
+  });
+
   it("rejects a mismatched confirmation password", () => {
     const result = registrationCredentialsSchema.safeParse({
       ...validCredentials,

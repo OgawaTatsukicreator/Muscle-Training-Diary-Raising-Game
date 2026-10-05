@@ -20,6 +20,11 @@ import {
   type BodyWeightEntry,
 } from "@/lib/domain/body-weight";
 import {
+  DEFAULT_MASO_NAME,
+  displayNameFieldSchema,
+  storedNameSchema,
+} from "@/lib/domain/display-name";
+import {
   defaultsForCustomExercise,
   type CustomExerciseOptions,
 } from "@/lib/domain/load";
@@ -51,7 +56,8 @@ const MAX_LOCAL_BODY_WEIGHTS = 3_700;
 
 const masoStatusSchema = z
   .object({
-    name: z.string().trim().min(1).max(30),
+    // 保存済みの名前が見えない文字だけでも、読み込み全体が失敗しないようにする
+    name: storedNameSchema(DEFAULT_MASO_NAME),
     level: z.number().int().min(1).max(999),
     experience: z.number().int().min(0).max(99_900),
     growthPoints: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
@@ -512,10 +518,13 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         return { ok: false, message: "保存データを確認できないため、名前を変更できません。" };
       }
 
-      const parsed = z.string().trim().min(1).max(30).safeParse(name);
+      const parsed = displayNameFieldSchema("名前").safeParse(name);
 
       if (!parsed.success) {
-        return { ok: false, message: "名前は1〜30文字で入力してください。" };
+        return {
+          ok: false,
+          message: parsed.error.issues[0]?.message ?? "名前を確認してください。",
+        };
       }
 
       const nextMaso = { ...state.maso, name: parsed.data };

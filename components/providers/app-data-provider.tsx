@@ -28,6 +28,13 @@ import {
   type BodyWeightEntry,
 } from "@/lib/domain/body-weight";
 import { dateKeyInTimeZone } from "@/lib/domain/date";
+import {
+  DEFAULT_DISPLAY_NAME,
+  DEFAULT_MASO_NAME,
+  displayNameFieldSchema,
+  storedNameSchema,
+} from "@/lib/domain/display-name";
+import { describeRpcError, settle } from "@/lib/errors/rpc-error";
 import { isValidItemActionAmount, type FoodKind } from "@/lib/domain/growth";
 import {
   CALCULATION_PATTERNS,
@@ -122,7 +129,7 @@ const EMPTY_CLOUD_STATE: CloudDataState = {
 };
 
 const profileRowSchema = z.object({
-  display_name: z.string().trim().min(1).max(30),
+  display_name: storedNameSchema(DEFAULT_DISPLAY_NAME),
 });
 
 const settingsRowSchema = z.object({
@@ -189,7 +196,7 @@ const workoutRowSchema = z.object({
 });
 
 const masoRowSchema = z.object({
-  maso_name: z.string().trim().min(1).max(30),
+  maso_name: storedNameSchema(DEFAULT_MASO_NAME),
   level: z.number().int().min(1).max(999),
   experience: z.number().int().min(0).max(99_900),
   growth_points: z.number().int().min(0),
@@ -211,7 +218,11 @@ const saveWorkoutResultSchema = z.object({
 });
 
 const renameMasoResultSchema = z.object({
-  name: z.string().trim().min(1).max(30),
+  name: storedNameSchema(DEFAULT_MASO_NAME),
+});
+
+const updateDisplayNameResultSchema = z.object({
+  displayName: storedNameSchema(DEFAULT_DISPLAY_NAME),
 });
 
 const itemInventoryResultSchema = z.object({
@@ -1125,37 +1136,48 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       }
       const operationUserId = authState.userId;
 
-      const parsed = z.string().trim().min(1).max(30).safeParse(name);
+      const parsed = displayNameFieldSchema("名前").safeParse(name);
       if (!parsed.success) {
-        return cloudFailure("名前は1〜30文字で入力してください。");
+        return cloudFailure(parsed.error.issues[0]?.message ?? "名前を確認してください。");
       }
 
-      const { data, error } = await supabase.rpc("rename_maso", {
-        p_name: parsed.data,
-        p_expected_user_id: authState.userId,
-      });
+      const { data, error } = await settle(() =>
+        supabase.rpc("rename_maso", {
+          p_name: parsed.data,
+          p_expected_user_id: operationUserId,
+        }),
+      );
       if (activeUserIdRef.current !== operationUserId) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
       if (error) {
-        return cloudFailure("名前を保存できませんでした。もう一度お試しください。");
+        return cloudFailure(describeRpcError(error, "名前"));
       }
 
       const result = renameMasoResultSchema.safeParse(data);
       if (!result.success) {
-        return cloudFailure("保存した名前を確認できませんでした。ページを再読み込みしてください。");
+        // 保存自体は成功している可能性が高い。最新の状態を取り直して確認する。
+        const latest = await refreshCloudData();
+        return latest
+          ? { ok: true, data: latest.maso }
+          : cloudFailure("保存した名前を確認できませんでした。ページを再読み込みしてください。");
       }
 
-      const nextMaso = { ...cloudState.maso, name: result.data.name };
-      setCloudState((current) => ({ ...current, maso: nextMaso }));
+      const savedName = result.data.name;
+      // 直前の操作で変わった育成値などを上書きしないよう、名前だけを差し替える
+      setCloudState((current) => ({
+        ...current,
+        maso: { ...current.maso, name: savedName },
+      }));
       setCloudIssue(null);
-      return { ok: true, data: nextMaso };
+      return { ok: true, data: { ...cloudState.maso, name: savedName } };
     },
     [
       authState.userId,
       cloudReady,
       cloudState.maso,
       local,
+      refreshCloudData,
       supabase,
       usingLocal,
     ],
@@ -1180,35 +1202,36 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       }
       const operationUserId = authState.userId;
 
-      const parsed = z.string().trim().min(1).max(30).safeParse(displayName);
+      const parsed = displayNameFieldSchema("表示名").safeParse(displayName);
       if (!parsed.success) {
-        return cloudFailure("表示名は1〜30文字で入力してください。");
+        return cloudFailure(parsed.error.issues[0]?.message ?? "表示名を確認してください。");
       }
 
-      const { data, error } = await supabase
-        .from("profiles")
-        .update({ display_name: parsed.data })
-        .eq("id", authState.userId)
-        .select("display_name")
-        .single();
+      // 表示名の正規化と検証はサーバー側で行うため、専用のRPC経由で保存する
+      const { data, error } = await settle(() =>
+        supabase.rpc("update_display_name", { p_name: parsed.data }),
+      );
       if (activeUserIdRef.current !== operationUserId) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
       if (error) {
-        return cloudFailure("プロフィールを保存できませんでした。もう一度お試しください。");
+        return cloudFailure(describeRpcError(error, "表示名"));
       }
 
-      const row = profileRowSchema.safeParse(data);
-      if (!row.success) {
-        return cloudFailure("保存したプロフィールを確認できませんでした。ページを再読み込みしてください。");
+      const result = updateDisplayNameResultSchema.safeParse(data);
+      if (!result.success) {
+        const latest = await refreshCloudData();
+        return latest
+          ? { ok: true, data: latest.profile }
+          : cloudFailure("保存した表示名を確認できませんでした。ページを再読み込みしてください。");
       }
 
-      const profile = { displayName: row.data.display_name };
+      const profile = { displayName: result.data.displayName };
       setCloudState((current) => ({ ...current, profile }));
       setCloudIssue(null);
       return { ok: true, data: profile };
     },
-    [authState.userId, cloudReady, supabase, usingCloud],
+    [authState.userId, cloudReady, refreshCloudData, supabase, usingCloud],
   );
 
   const value = useMemo<AppDataContextValue>(

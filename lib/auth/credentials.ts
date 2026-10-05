@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { displayNameFieldSchema } from "@/lib/domain/display-name";
+
 const emailSchema = z
   .string()
   .trim()
@@ -16,11 +18,7 @@ export const loginCredentialsSchema = z
 
 export const registrationCredentialsSchema = z
   .object({
-    displayName: z
-      .string()
-      .trim()
-      .min(1, "表示名を入力してください。")
-      .max(30, "表示名は30文字以内で入力してください。"),
+    displayName: displayNameFieldSchema("表示名"),
     email: emailSchema,
     password: z
       .string()

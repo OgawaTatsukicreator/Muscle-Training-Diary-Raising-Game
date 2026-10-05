@@ -18,6 +18,7 @@ import { StorageNotice } from "@/components/common/storage-notice";
 import { ItemQuantitySelector } from "@/components/home/item-quantity-selector";
 import { useAppData } from "@/components/providers/app-data-provider";
 import { formatJapaneseDate } from "@/lib/domain/date";
+import { validateDisplayName } from "@/lib/domain/display-name";
 import {
   FOOD_ITEMS,
   MAX_ITEM_ACTION_AMOUNT,
@@ -179,6 +180,9 @@ export function HomeDashboard({ today }: { today: string }) {
     setPanel(nextPanel);
     setMessage(null);
     setIsConfirmingClear(false);
+    // 前回編集して保存しなかった入力が残り、欄が空白に見えないようにする
+    setNameOverride(null);
+    setProfileNameOverride(null);
 
     if (nextPanel === "feed") {
       setFeedMode(totalFood > 0 ? "feed" : "exchange");
@@ -296,9 +300,21 @@ export function HomeDashboard({ today }: { today: string }) {
       return;
     }
 
+    const checked = validateDisplayName(name);
+    if (!checked.ok) {
+      setMessage(checked.message);
+      return;
+    }
+
+    if (checked.name === maso.name) {
+      setNameOverride(null);
+      setMessage("名前は変わっていません。");
+      return;
+    }
+
     mutatingRef.current = true;
     setIsMutating(true);
-    const result = await renameMaso(name);
+    const result = await renameMaso(checked.name);
 
     if (result.ok) {
       setNameOverride(null);
@@ -315,9 +331,21 @@ export function HomeDashboard({ today }: { today: string }) {
       return;
     }
 
+    const checked = validateDisplayName(profileName);
+    if (!checked.ok) {
+      setMessage(checked.message);
+      return;
+    }
+
+    if (checked.name === profile.displayName) {
+      setProfileNameOverride(null);
+      setMessage("表示名は変わっていません。");
+      return;
+    }
+
     mutatingRef.current = true;
     setIsMutating(true);
-    const result = await updateProfile(profileName);
+    const result = await updateProfile(checked.name);
 
     if (result.ok) {
       setProfileNameOverride(null);

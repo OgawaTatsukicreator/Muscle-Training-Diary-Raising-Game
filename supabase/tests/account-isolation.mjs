@@ -163,7 +163,7 @@ try {
       exercises[user] = defaults.find((exercise) => exercise.master_key === "default-bench-press").id;
     }));
     await check(`own profile, settings and custom exercise writes succeed for ${user[0]}`, () => asUser(user, async () => {
-      assert.equal((await rows("update public.profiles set display_name = 'My profile' returning id")).length, 1);
+      assert.equal((await one("select public.update_display_name('My profile') as result")).result.displayName, "My profile");
       assert.equal((await rows("update public.user_settings set default_sets = 4, weight_unit = 'lb' returning user_id")).length, 1);
       const custom = (await one("select public.add_exercise('My exercise', 'other') as result")).result;
       assert.equal(custom.isDefault, false);
@@ -332,10 +332,85 @@ try {
     assert.ok(functions[0].args.includes("p_body_weight_kg"));
   });
 
+  // ---- Name normalization (migration 0004). Cases mirror lib/domain/display-name.test.ts.
+  const normalizationCases = [
+    ["  テスト   君 ", "テスト 君"],
+    ["a\t\nb", "a b"],
+    ["\u3000名前\u00a0\u00a0です\u3000", "名前 です"],
+    ["テ\u200bス\u3164ト", "テスト"],
+    ["\ufeffAlice", "Alice"],
+    ["マソ君💪", "マソ君💪"],
+    ["か\u3099", "が"],
+    ["\u200b", ""],
+    ["\u3164\u3164", ""],
+    ["\u2800 \u3000", ""],
+    ["\u2063", ""],
+    ["\u0001\u0002", ""],
+  ];
+  await check("normalize_display_name matches the TypeScript rules", async () => {
+    for (const [input, expected] of normalizationCases) {
+      assert.equal((await one("select public.normalize_display_name($1) as value", [input])).value, expected, JSON.stringify(input));
+    }
+  });
+  await check("clean_display_name falls back, trims to 30 characters and is not callable by app roles", async () => {
+    assert.equal((await one("select public.clean_display_name($1, 'x') as value", ["\u3164"])).value, "x");
+    assert.equal((await one("select public.clean_display_name($1, 'x') as value", [null])).value, "x");
+    assert.equal((await one("select public.clean_display_name($1, 'x') as value", ["あ".repeat(40)])).value, "あ".repeat(30));
+    await denied(A, "select public.clean_display_name('a', 'x')");
+  });
+  await check("sign-up with an invisible display name falls back to the default instead of failing", async () => {
+    await db.exec("begin");
+    try {
+      const probe = "44444444-4444-4444-8444-444444444444";
+      await db.query("insert into auth.users (id, raw_user_meta_data) values ($1, $2)", [probe, { display_name: "\u3164\u200b" }]);
+      assert.equal((await one("select display_name from public.profiles where id = $1", [probe])).display_name, "トレーニー");
+      const probe2 = "55555555-5555-4555-8555-555555555555";
+      await db.query("insert into auth.users (id, raw_user_meta_data) values ($1, $2)", [probe2, { display_name: "  Bob\u200b  " }]);
+      assert.equal((await one("select display_name from public.profiles where id = $1", [probe2])).display_name, "Bob");
+    } finally {
+      await db.exec("rollback");
+    }
+  });
+  for (const user of [A, B]) {
+    await check(`${user[0]} update_display_name stores the normalized name`, () => asUser(user, async () => {
+      const result = (await one("select public.update_display_name($1) as result", [" 新\u200bしい\u3000名前 "])).result;
+      assert.equal(result.displayName, "新しい 名前");
+      assert.equal((await one("select display_name from public.profiles")).display_name, "新しい 名前");
+    }, { commit: true }));
+    await check(`${user[0]} update_display_name rejects blank-looking names`, async () => {
+      for (const bad of ["", "   ", "\u3164", "\u200b\u200c", "\u2800", "あ".repeat(31)]) {
+        await denied(user, "select public.update_display_name($1)", [bad], "22023");
+      }
+      await denied(user, "select public.update_display_name(null)", [], "22023");
+    });
+    await check(`${user[0]} rename_maso stores the normalized name and rejects blank-looking names`, async () => {
+      await asUser(user, async () => {
+        assert.equal((await one(renameSql, [" 強\u200bい\u3000マソ ", user])).result.name, "強い マソ");
+        assert.equal((await one("select maso_name from public.maso_status")).maso_name, "強い マソ");
+      }, { commit: true });
+      for (const bad of ["", "\u3164", "\u200b", "\u2800\u3000", "あ".repeat(31)]) {
+        await denied(user, renameSql, [bad, user], "22023");
+      }
+    });
+    await check(`${user[0]} cannot write the display name directly any more`, () =>
+      denied(user, "update public.profiles set display_name = $1 where id = $2", ["Hijack", user]));
+    await check(`${user[0]} cannot store a non-normalized name even through broad grants`, () =>
+      denied(user, "update public.profiles set display_name = E'x\\u200b' where id = $1", [user], "23514", { broadenGrants: true }));
+  }
+  await check("update_display_name is limited to signed-in users", async () => {
+    await denied(null, "select public.update_display_name('x')");
+    await denied("", "select public.update_display_name('x')", [], "28000");
+  });
+  await check("add_exercise stores a normalized name", () => asUser(A, async () => {
+    const result = (await one("select public.add_exercise($1, 'chest') as result", ["  Cable\u200b  fly "])).result;
+    assert.equal(result.name, "Cable fly");
+    await assert.rejects(() => one("select public.add_exercise($1, 'chest')", ["\u3164"]), (error) => error.code === "22023");
+  }));
+
   const beforeA = await snapshot(A);
   const beforeB = await snapshot(B);
 
-  const mutable = { profiles: "display_name", user_settings: "default_sets", exercises: "name" };
+  const mutable = { user_settings: "default_sets", exercises: "name" };
   for (const user of [A, B]) {
     const other = user === A ? B : A;
     for (const table of tables) {
@@ -416,6 +491,7 @@ try {
   for (const [name, sql, params] of [
     ["workout", saveSql, [exercises[A], 100, request(10)]],
     ["add exercise", "select public.add_exercise($1, 'chest') as result", ["Anon exercise"]],
+    ["display name", "select public.update_display_name($1) as result", ["Anon"]],
     ["body weight", "select public.save_body_weight('2026-01-01', $1) as result", [70]],
     ["exchange", exchangeSql, ["onigiri", 1, request(11), A]],
     ["feed", feedSql, ["protein", 1, request(12), A]],
