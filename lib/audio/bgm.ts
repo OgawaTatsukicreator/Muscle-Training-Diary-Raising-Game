@@ -1,19 +1,69 @@
-export const BGM_TRACKS = [
-  { id: "home", title: "いつもの場所", originalTitle: "A Place I Call Home", src: "/audio/bgm/track-01.mp3" },
-  { id: "peaceful", title: "おだやかな日々", originalTitle: "Peaceful Days", src: "/audio/bgm/track-02.mp3" },
-  { id: "sand", title: "砂のお城", originalTitle: "Sand Castles", src: "/audio/bgm/track-03.mp3" },
-  { id: "summer", title: "夏の思い出", originalTitle: "Summer Memories", src: "/audio/bgm/track-04.mp3" },
-  { id: "innocence", title: "はじまりの気持ち", originalTitle: "Innocence", src: "/audio/bgm/track-05.mp3" },
-] as const;
+import { WORKOUT_SONGS } from "@/lib/audio/workout-music";
+import type { SynthPort } from "@/lib/audio/workout-synth";
 
-export type BgmTrackId = (typeof BGM_TRACKS)[number]["id"];
+export type BgmCategory = "workout" | "relax";
+
+export type FileBgmTrack = {
+  kind: "file";
+  category: "relax";
+  id: string;
+  title: string;
+  originalTitle: string;
+  src: string;
+  description: string;
+};
+
+export type SynthBgmTrack = {
+  kind: "synth";
+  category: "workout";
+  id: string;
+  title: string;
+  description: string;
+};
+
+export type BgmTrack = FileBgmTrack | SynthBgmTrack;
+
+/** トレーニング向け。音源ファイルを使わず、ブラウザ内で生成して鳴らす（workout-music.ts）。 */
+export const WORKOUT_TRACKS: readonly SynthBgmTrack[] = WORKOUT_SONGS.map((song) => ({
+  kind: "synth",
+  category: "workout",
+  id: song.id,
+  title: song.title,
+  description: `${song.description}（${song.bpm} BPM）`,
+}));
+
+/** ゆったりした曲。Juhani Junkala（CC0）の音源ファイル。 */
+export const RELAX_TRACKS: readonly FileBgmTrack[] = [
+  { kind: "file", category: "relax", id: "home", title: "いつもの場所", originalTitle: "A Place I Call Home", src: "/audio/bgm/track-01.mp3", description: "ゆったり" },
+  { kind: "file", category: "relax", id: "peaceful", title: "おだやかな日々", originalTitle: "Peaceful Days", src: "/audio/bgm/track-02.mp3", description: "おだやか" },
+  { kind: "file", category: "relax", id: "sand", title: "砂のお城", originalTitle: "Sand Castles", src: "/audio/bgm/track-03.mp3", description: "のんびり" },
+  { kind: "file", category: "relax", id: "summer", title: "夏の思い出", originalTitle: "Summer Memories", src: "/audio/bgm/track-04.mp3", description: "あたたかい" },
+  { kind: "file", category: "relax", id: "innocence", title: "はじまりの気持ち", originalTitle: "Innocence", src: "/audio/bgm/track-05.mp3", description: "やさしい" },
+];
+
+export const BGM_TRACKS: readonly BgmTrack[] = [...WORKOUT_TRACKS, ...RELAX_TRACKS];
+
+export const BGM_TRACK_GROUPS: readonly {
+  category: BgmCategory;
+  label: string;
+  tracks: readonly BgmTrack[];
+}[] = [
+  { category: "workout", label: "トレーニング", tracks: WORKOUT_TRACKS },
+  { category: "relax", label: "リラックス", tracks: RELAX_TRACKS },
+];
+
+export type BgmTrackId = string;
 export type BgmPreferences = { trackId: BgmTrackId; enabled: boolean; volume: number };
 export type BgmStatus = "idle" | "loading" | "playing" | "paused" | "blocked" | "error";
 export type BgmSnapshot = BgmPreferences & { ready: boolean; status: BgmStatus; storageIssue: boolean };
 
 export const BGM_STORAGE_KEY = "maso-diary:bgm:v1";
-export const DEFAULT_BGM: BgmPreferences = { trackId: "home", enabled: true, volume: 0.25 };
+export const DEFAULT_BGM: BgmPreferences = { trackId: WORKOUT_TRACKS[0].id, enabled: true, volume: 0.25 };
 export const INITIAL_BGM_STATE: BgmSnapshot = { ...DEFAULT_BGM, ready: false, status: "idle", storageIssue: false };
+
+export function findBgmTrack(trackId: string): BgmTrack | undefined {
+  return BGM_TRACKS.find((track) => track.id === trackId);
+}
 
 export function readBgmPreferences(raw: string | null): BgmPreferences {
   try {
@@ -21,7 +71,7 @@ export function readBgmPreferences(raw: string | null): BgmPreferences {
     if (!saved || typeof saved !== "object") return { ...DEFAULT_BGM };
     const value = saved as Record<string, unknown>;
     return {
-      trackId: BGM_TRACKS.find((track) => track.id === value.trackId)?.id ?? DEFAULT_BGM.trackId,
+      trackId: findBgmTrack(String(value.trackId))?.id ?? DEFAULT_BGM.trackId,
       enabled: typeof value.enabled === "boolean" ? value.enabled : DEFAULT_BGM.enabled,
       volume: typeof value.volume === "number" && Number.isFinite(value.volume)
         ? Math.max(0, Math.min(1, value.volume)) : DEFAULT_BGM.volume,
@@ -34,7 +84,7 @@ export function readBgmPreferences(raw: string | null): BgmPreferences {
 export function bgmStatusText(state: BgmSnapshot): string {
   if (!state.ready) return "BGMを準備中";
   if (!state.enabled) return "停止中";
-  if (state.status === "error") return "曲を読み込めませんでした。再生を押すと再試行します。";
+  if (state.status === "error") return "曲を再生できませんでした。再生を押すと再試行します。";
   if (state.status === "blocked") return "画面の操作後に再生します";
   if (state.status === "playing") return state.volume === 0 ? "ミュート中" : "再生中";
   if (state.status === "paused") return "一時停止中";
@@ -53,6 +103,7 @@ export class BgmPlayer {
   private listeners = new Set<() => void>();
   private audio: AudioPort | null = null;
   private storage: PreferencesStorage | null = null;
+  private synth: SynthPort | null = null;
   private playAttempt = 0;
 
   getSnapshot = () => this.state;
@@ -67,9 +118,19 @@ export class BgmPlayer {
     this.listeners.forEach((listener) => listener());
   }
 
-  mount(audio: AudioPort, storage: PreferencesStorage) {
+  private currentTrack(): BgmTrack {
+    return findBgmTrack(this.state.trackId) ?? WORKOUT_TRACKS[0];
+  }
+
+  /** 音源ファイルの曲でだけ、<audio>要素のイベントを状態に反映する。 */
+  private playsThroughAudio() {
+    return this.currentTrack().kind === "file";
+  }
+
+  mount(audio: AudioPort, storage: PreferencesStorage, synth: SynthPort | null = null) {
     this.audio = audio;
     this.storage = storage;
+    this.synth = synth;
     let preferences = { ...DEFAULT_BGM };
     let storageIssue = false;
     try { preferences = readBgmPreferences(storage.getItem(BGM_STORAGE_KEY)); }
@@ -90,7 +151,10 @@ export class BgmPlayer {
   unmount() {
     ++this.playAttempt;
     const audio = this.audio;
+    const synth = this.synth;
     this.audio = null;
+    this.synth = null;
+    synth?.dispose();
     if (!audio) return;
     audio.removeEventListener("playing", this.onPlaying);
     audio.removeEventListener("pause", this.onPause);
@@ -102,16 +166,16 @@ export class BgmPlayer {
   }
 
   private onPlaying = () => {
-    if (this.state.enabled && this.audio && !this.audio.paused) this.update({ status: "playing" });
+    if (this.playsThroughAudio() && this.state.enabled && this.audio && !this.audio.paused) this.update({ status: "playing" });
   };
   private onPause = () => {
-    if (this.state.status === "playing") this.update({ status: "paused" });
+    if (this.playsThroughAudio() && this.state.status === "playing") this.update({ status: "paused" });
   };
   private onWaiting = () => {
-    if (this.state.enabled && this.audio && !this.audio.paused) this.update({ status: "loading" });
+    if (this.playsThroughAudio() && this.state.enabled && this.audio && !this.audio.paused) this.update({ status: "loading" });
   };
   private onError = () => {
-    if (this.state.enabled && this.audio?.error) this.update({ status: "error" });
+    if (this.playsThroughAudio() && this.state.enabled && this.audio?.error) this.update({ status: "error" });
   };
 
   private save() {
@@ -126,7 +190,15 @@ export class BgmPlayer {
     if (!this.audio) return;
     ++this.playAttempt;
     this.audio.pause();
-    this.audio.src = BGM_TRACKS.find((track) => track.id === this.state.trackId)!.src;
+    this.synth?.stop();
+    const track = this.currentTrack();
+    if (track.kind === "file") {
+      this.audio.src = track.src;
+    } else if (this.audio.src) {
+      // シンセの曲へ切り替えたら、直前のファイルの読み込みを手放す
+      this.audio.removeAttribute("src");
+      this.audio.load();
+    }
   }
 
   private play() {
@@ -134,6 +206,25 @@ export class BgmPlayer {
     if (!audio || !this.state.enabled) return;
     const attempt = ++this.playAttempt;
     this.update({ status: "loading" });
+    const track = this.currentTrack();
+
+    if (track.kind === "synth") {
+      const synth = this.synth;
+      if (!synth) {
+        this.update({ status: "error" });
+        return;
+      }
+
+      void synth.start(track.id, this.state.volume).then((result) => {
+        if (this.synth !== synth || attempt !== this.playAttempt || !this.state.enabled) return;
+        this.update({ status: result === "running" ? "playing" : "blocked" });
+      }).catch(() => {
+        if (this.synth !== synth || attempt !== this.playAttempt || !this.state.enabled) return;
+        this.update({ status: "error" });
+      });
+      return;
+    }
+
     void audio.play().then(() => {
       if (this.audio === audio && attempt === this.playAttempt && this.state.enabled && !audio.paused) {
         this.update({ status: "playing" });
@@ -155,16 +246,18 @@ export class BgmPlayer {
     const failed = this.state.status === "error";
     this.update({ enabled, status: enabled ? "loading" : "paused" });
     this.save();
-    if (!enabled) this.audio.pause();
-    else {
-      if (failed) this.audio.load();
+    if (!enabled) {
+      this.audio.pause();
+      this.synth?.stop();
+    } else {
+      if (failed && this.playsThroughAudio()) this.audio.load();
       this.play();
     }
   };
 
   selectTrack = (trackId: string) => {
-    if (!BGM_TRACKS.some((track) => track.id === trackId) || trackId === this.state.trackId) return;
-    this.update({ trackId: trackId as BgmTrackId, status: this.state.enabled ? "loading" : "paused" });
+    if (!findBgmTrack(trackId) || trackId === this.state.trackId) return;
+    this.update({ trackId, status: this.state.enabled ? "loading" : "paused" });
     this.save();
     this.setSource();
     if (this.state.enabled) this.play();
@@ -178,6 +271,7 @@ export class BgmPlayer {
       this.audio.volume = nextVolume;
       this.audio.muted = nextVolume === 0;
     }
+    this.synth?.setVolume(nextVolume);
     this.save();
     this.resumeAfterGesture();
   };

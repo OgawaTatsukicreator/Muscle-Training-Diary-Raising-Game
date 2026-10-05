@@ -4,7 +4,7 @@ import { useId } from "react";
 import { Music2 } from "lucide-react";
 
 import { useBgm } from "@/components/providers/bgm-provider";
-import { BGM_TRACKS, bgmStatusText } from "@/lib/audio/bgm";
+import { BGM_TRACK_GROUPS, bgmStatusText } from "@/lib/audio/bgm";
 
 export function BgmSettings() {
   const bgm = useBgm();
@@ -23,8 +23,13 @@ export function BgmSettings() {
       </div>
       <label htmlFor={`${id}-track`} className="mt-2 block text-xs font-bold text-muted">曲を選ぶ</label>
       <select id={`${id}-track`} value={bgm.trackId} disabled={!bgm.ready} onChange={(event) => bgm.selectTrack(event.target.value)} className="mt-2 min-h-12 w-full rounded-xl border border-ink/20 bg-white px-3 text-sm font-bold">
-        {BGM_TRACKS.map((track, index) => <option key={track.id} value={track.id}>{index + 1}. {track.title}</option>)}
+        {BGM_TRACK_GROUPS.map((group) => (
+          <optgroup key={group.category} label={group.label}>
+            {group.tracks.map((track) => <option key={track.id} value={track.id}>{track.title}</option>)}
+          </optgroup>
+        ))}
       </select>
+      <p className="mt-1.5 text-[11px] leading-5 text-muted">{bgm.track.description}</p>
       <div className="mt-4 flex items-center justify-between text-xs font-bold">
         <label htmlFor={`${id}-volume`}>音量</label>
         <output htmlFor={`${id}-volume`}>{Math.round(bgm.volume * 100)}%</output>
@@ -37,7 +42,11 @@ export function BgmSettings() {
         {bgm.storageIssue ? " 現在は設定を保存できません。" : ""}
       </p>
       <p className="mt-2 text-[10px] leading-5 text-muted">
-        音楽：Juhani Junkala（CC0） · <a href="/audio/bgm/CREDITS.md" target="_blank" rel="noreferrer" className="underline underline-offset-2">音源クレジット</a>
+        {bgm.track.kind === "synth" ? (
+          "トレーニング向けの曲は、このアプリ内で生成しています"
+        ) : (
+          <>音楽：Juhani Junkala（CC0） · <a href="/audio/bgm/CREDITS.md" target="_blank" rel="noreferrer" className="underline underline-offset-2">音源クレジット</a></>
+        )}
       </p>
     </section>
   );
