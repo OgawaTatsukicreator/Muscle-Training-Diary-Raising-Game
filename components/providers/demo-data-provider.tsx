@@ -31,10 +31,13 @@ import {
 import { dateKeyInTimeZone } from "@/lib/domain/date";
 import {
   applyExperience,
+  EMPTY_FOOD_ITEMS,
   FOOD_ITEMS,
+  foodBalance,
   isValidItemActionAmount,
   rewardsFromVolume,
   workoutRewardAdjustment,
+  withFoodBalance,
   type FoodKind,
 } from "@/lib/domain/growth";
 import { evaluateWorkoutDraft } from "@/lib/domain/workout-load";
@@ -64,6 +67,15 @@ const masoStatusSchema = z
     growthPoints: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     food: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     protein: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+    // バナナ・ささみ・ステーキ。追加前に保存されたデータには無いので0で補う
+    items: z
+      .object({
+        banana: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+        chicken: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+        steak: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+      })
+      .strict()
+      .default({ ...EMPTY_FOOD_ITEMS }),
   })
   .strict();
 
@@ -138,6 +150,7 @@ const initialState: DemoDataState = {
     growthPoints: 0,
     food: 0,
     protein: 0,
+    items: { ...EMPTY_FOOD_ITEMS },
   },
 };
 
@@ -627,18 +640,17 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         return { ok: false, message: "育成ポイントが足りません。" };
       }
 
-      const inventoryKey = kind === "onigiri" ? "food" : "protein";
-      const nextInventory = state.maso[inventoryKey] + exchangeAmount;
+      const nextInventory = foodBalance(state.maso, kind) + exchangeAmount;
 
       if (!Number.isSafeInteger(nextInventory)) {
         return { ok: false, message: "これ以上アイテムを所持できません。" };
       }
 
-      const nextMaso = {
-        ...state.maso,
-        growthPoints: state.maso.growthPoints - totalCost,
-        [inventoryKey]: nextInventory,
-      };
+      const nextMaso = withFoodBalance(
+        { ...state.maso, growthPoints: state.maso.growthPoints - totalCost },
+        kind,
+        nextInventory,
+      );
 
       setState((current) => ({ ...current, maso: nextMaso }));
       return { ok: true, data: nextMaso };
@@ -656,10 +668,9 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         return { ok: false, message: "あげる個数を確認してください。" };
       }
       const useAmount = amount;
-      const inventoryKey = kind === "onigiri" ? "food" : "protein";
       const item = FOOD_ITEMS[kind];
 
-      if (state.maso[inventoryKey] < useAmount) {
+      if (foodBalance(state.maso, kind) < useAmount) {
         return { ok: false, message: `${item.name}が足りません。育成ポイントと交換できます。` };
       }
 
@@ -668,12 +679,15 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         state.maso.experience,
         useAmount * item.experience,
       );
-      const nextMaso = {
-        ...state.maso,
-        level: nextExperience.level,
-        experience: nextExperience.experience,
-        [inventoryKey]: state.maso[inventoryKey] - useAmount,
-      };
+      const nextMaso = withFoodBalance(
+        {
+          ...state.maso,
+          level: nextExperience.level,
+          experience: nextExperience.experience,
+        },
+        kind,
+        foodBalance(state.maso, kind) - useAmount,
+      );
 
       setState((current) => ({ ...current, maso: nextMaso }));
       return { ok: true, data: nextMaso };

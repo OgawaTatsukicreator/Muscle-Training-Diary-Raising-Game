@@ -21,13 +21,16 @@ import { formatJapaneseDate } from "@/lib/domain/date";
 import { validateDisplayName } from "@/lib/domain/display-name";
 import {
   FOOD_ITEMS,
+  FOOD_KINDS,
   MAX_ITEM_ACTION_AMOUNT,
   clampItemActionAmount,
+  foodBalance,
   isValidItemActionAmount,
   masoImageForLevel,
   masoPhaseForLevel,
   maxExchangeAmount,
   requiredExperienceForLevel,
+  totalFoodCount,
   type FoodKind,
 } from "@/lib/domain/growth";
 
@@ -93,8 +96,7 @@ export function HomeDashboard({ today }: { today: string }) {
   const masoPhase = masoPhaseForLevel(maso.level);
   const masoImage = masoImageForLevel(maso.level);
   const selectedFood = FOOD_ITEMS[selectedFoodKind];
-  const selectedFoodBalance =
-    selectedFoodKind === "onigiri" ? maso.food : maso.protein;
+  const selectedFoodBalance = foodBalance(maso, selectedFoodKind);
   const maxSelectableFood = Math.min(
     selectedFoodBalance,
     MAX_ITEM_ACTION_AMOUNT,
@@ -109,7 +111,7 @@ export function HomeDashboard({ today }: { today: string }) {
     isValidItemActionAmount(feedAmount) && feedAmount <= maximumAmount;
   const exchangeCost =
     maximumAmount > 0 ? feedAmount * selectedFood.growthPointCost : 0;
-  const totalFood = maso.food + maso.protein;
+  const totalFood = totalFoodCount(maso);
 
   useEffect(() => {
     const dialog = panelDialogRef.current;
@@ -222,8 +224,7 @@ export function HomeDashboard({ today }: { today: string }) {
       } else if (result.ok) {
         pendingFeedIdsRef.current.delete(payload);
         setFeedStep("select");
-        const nextBalance =
-          selectedFoodKind === "onigiri" ? result.data.food : result.data.protein;
+        const nextBalance = foodBalance(result.data, selectedFoodKind);
         setFeedAmount(clampItemActionAmount(feedAmount, nextBalance));
       }
     } catch {
@@ -601,9 +602,9 @@ export function HomeDashboard({ today }: { today: string }) {
                         {feedMode === "exchange" ? "交換するアイテム" : "あげるアイテム"}
                       </legend>
                       <div className="mt-2 grid grid-cols-2 gap-2">
-                        {(Object.keys(FOOD_ITEMS) as FoodKind[]).map((kind) => {
+                        {FOOD_KINDS.map((kind) => {
                           const item = FOOD_ITEMS[kind];
-                          const balance = kind === "onigiri" ? maso.food : maso.protein;
+                          const balance = foodBalance(maso, kind);
 
                           return (
                             <button

@@ -4,20 +4,82 @@ export const MAX_MASO_LEVEL = 999;
 export const MAX_MASO_PHASE = 50;
 export const MAX_ITEM_ACTION_AMOUNT = 1_000;
 
+/**
+ * エサの種類。価格と経験値は supabase/migrations/0007_more_food_items.sql の
+ * food_item_stats() と同じ値にすること（単体テストで一致を確認している）。
+ * 並びは安い順で、画面の表示順にもなる。
+ */
 export const FOOD_ITEMS = {
+  banana: {
+    name: "バナナ",
+    growthPointCost: 2,
+    experience: 4,
+  },
   onigiri: {
     name: "おにぎり",
     growthPointCost: 5,
     experience: 10,
+  },
+  chicken: {
+    name: "ささみ",
+    growthPointCost: 10,
+    experience: 21,
   },
   protein: {
     name: "プロテイン",
     growthPointCost: 15,
     experience: 30,
   },
+  steak: {
+    name: "ステーキ",
+    growthPointCost: 40,
+    experience: 90,
+  },
 } as const;
 
 export type FoodKind = keyof typeof FOOD_ITEMS;
+export const FOOD_KINDS = Object.keys(FOOD_ITEMS) as FoodKind[];
+
+/**
+ * 在庫の持ち方。おにぎり・プロテインは従来の列(food / protein)、
+ * バナナ・ささみ・ステーキは items に入れる(DBの保存方法に合わせている)。
+ */
+export const EXTRA_FOOD_KINDS = ["banana", "chicken", "steak"] as const;
+export type ExtraFoodKind = (typeof EXTRA_FOOD_KINDS)[number];
+export type FoodItems = Record<ExtraFoodKind, number>;
+export const EMPTY_FOOD_ITEMS: FoodItems = { banana: 0, chicken: 0, steak: 0 };
+
+export type FoodInventory = {
+  food: number;
+  protein: number;
+  items: FoodItems;
+};
+
+function isExtraFoodKind(kind: FoodKind): kind is ExtraFoodKind {
+  return (EXTRA_FOOD_KINDS as readonly string[]).includes(kind);
+}
+
+export function foodBalance(inventory: FoodInventory, kind: FoodKind): number {
+  if (kind === "onigiri") return inventory.food;
+  if (kind === "protein") return inventory.protein;
+  return isExtraFoodKind(kind) ? (inventory.items[kind] ?? 0) : 0;
+}
+
+/** 指定した種類の在庫だけを差し替えた新しい在庫を返す。 */
+export function withFoodBalance<T extends FoodInventory>(
+  inventory: T,
+  kind: FoodKind,
+  balance: number,
+): T {
+  if (kind === "onigiri") return { ...inventory, food: balance };
+  if (kind === "protein") return { ...inventory, protein: balance };
+
+  return { ...inventory, items: { ...inventory.items, [kind]: balance } };
+}
+
+export function totalFoodCount(inventory: FoodInventory): number {
+  return FOOD_KINDS.reduce((sum, kind) => sum + foodBalance(inventory, kind), 0);
+}
 
 export function maxExchangeAmount(growthPoints: number, kind: FoodKind): number {
   if (!Number.isFinite(growthPoints) || growthPoints <= 0) {

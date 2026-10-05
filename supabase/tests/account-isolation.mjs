@@ -18,7 +18,7 @@ const B = "22222222-2222-4222-8222-222222222222";
 const LEGACY = "33333333-3333-4333-8333-333333333333";
 const request = (number) => `aaaaaaaa-aaaa-4aaa-8aaa-${String(number).padStart(12, "0")}`;
 const tables = [
-  "body_weight_logs", "exercises", "food_exchange_logs", "food_logs", "foods", "growth_logs",
+  "body_weight_logs", "exercises", "food_exchange_logs", "food_inventory", "food_logs", "foods", "growth_logs",
   "maso_status", "profiles", "reward_ledger", "user_settings", "workout_logs",
 ];
 const ownerColumn = (table) => table === "profiles" ? "id" : "user_id";
@@ -578,6 +578,97 @@ try {
   await check("the new RPCs have no arbitrary user parameter", () => denied(C,
     "select public.delete_workout(p_workout_id => $1::uuid, p_request_id => $2::uuid, p_user_id => $3::uuid)",
     [workoutC.id, request(433), A], "42883"));
+
+  // ---- More food items (migration 0007).
+  const foodStats = { banana: [2, 4], onigiri: [5, 10], chicken: [10, 21], protein: [15, 30], steak: [40, 90] };
+  await check("food_item_stats lists the price and experience of every kind", async () => {
+    for (const [kind, [cost, experience]] of Object.entries(foodStats)) {
+      const row = await one("select o_cost, o_experience from public.food_item_stats($1)", [kind]);
+      assert.deepEqual([row.o_cost, row.o_experience], [cost, experience], kind);
+    }
+    const unknown = await one("select o_cost, o_experience from public.food_item_stats('cake')");
+    assert.deepEqual([unknown.o_cost, unknown.o_experience], [null, null]);
+  });
+  await check("the helper functions are not callable by app roles", async () => {
+    await denied(A, "select * from public.food_item_stats('banana')");
+    await denied(A, "select public.food_items_json($1)", [A]);
+  });
+  const pointsNow = async (user) => Number((await asUser(user, () => one("select growth_points from public.maso_status"))).growth_points);
+  for (const user of [A, B]) {
+    await check(`${user[0]} can exchange for a new kind of food`, async () => {
+      const before = await pointsNow(user);
+      const result = await asUser(user, async () => (await one(exchangeSql, ["banana", 3, request(520), user])).result, { commit: true });
+      assert.equal(result.created, true);
+      assert.deepEqual(result.items, { banana: 3, chicken: 0, steak: 0 });
+      assert.equal(result.growthPoints, before - 6);
+      assert.equal(await pointsNow(user), before - 6);
+      const legacy = await asUser(user, () => one("select balance, protein_balance from public.foods"));
+      assert.equal(legacy.balance, 0);
+    });
+    await check(`${user[0]} replaying the exchange is idempotent and a changed payload is rejected`, async () => {
+      const before = await pointsNow(user);
+      const replay = await asUser(user, async () => (await one(exchangeSql, ["banana", 3, request(520), user])).result);
+      assert.equal(replay.created, false);
+      assert.deepEqual(replay.items, { banana: 3, chicken: 0, steak: 0 });
+      assert.equal(await pointsNow(user), before);
+      await denied(user, exchangeSql, ["banana", 4, request(520), user], "22023");
+      await denied(user, exchangeSql, ["chicken", 3, request(520), user], "22023");
+    });
+    await check(`${user[0]} feeding a new kind gives its experience and uses the stock`, async () => {
+      const before = await asUser(user, () => one("select level, experience from public.maso_status"));
+      const result = await asUser(user, async () => (await one(feedSql, ["banana", 2, request(521), user])).result, { commit: true });
+      assert.equal(result.created, true);
+      assert.deepEqual(result.items, { banana: 1, chicken: 0, steak: 0 });
+      const after = await asUser(user, () => one("select level, experience from public.maso_status"));
+      const gained = (after.experience - before.experience);
+      assert.ok(after.level >= before.level);
+      if (after.level === before.level) assert.equal(gained, 8);
+      const log = await asUser(user, () => one("select kind, used_points, experience_gained, after_item_balance from public.food_logs where request_id = $1", [request(521)]));
+      assert.deepEqual([log.kind, log.used_points, log.experience_gained, log.after_item_balance], ["banana", 2, 8, 1]);
+      const ledger = await asUser(user, () => one("select food_kind, food_delta, experience_delta from public.reward_ledger where request_id = $1 and event_type = 'food_use'", [request(521)]));
+      assert.deepEqual([ledger.food_kind, ledger.food_delta, ledger.experience_delta], ["banana", -2, 8]);
+    });
+    await check(`${user[0]} replaying a feed does not use the stock twice`, async () => {
+      const replay = await asUser(user, async () => (await one(feedSql, ["banana", 2, request(521), user])).result);
+      assert.equal(replay.created, false);
+      assert.deepEqual(replay.items, { banana: 1, chicken: 0, steak: 0 });
+      await denied(user, feedSql, ["banana", 1, request(521), user], "22023");
+    });
+    await check(`${user[0]} cannot feed more than owned, an unowned kind or an unknown kind`, async () => {
+      await denied(user, feedSql, ["banana", 2, request(522), user], "22023");
+      await denied(user, feedSql, ["steak", 1, request(523), user], "22023");
+      await denied(user, feedSql, ["cake", 1, request(524), user], "22023");
+      await denied(user, exchangeSql, ["cake", 1, request(525), user], "22023");
+      await denied(user, exchangeSql, ["steak", 1000, request(526), user], "22023");
+    });
+  }
+  await check("the steak costs 40 points and gives 90 experience", async () => {
+    const before = await asUser(B, () => one("select level, experience, growth_points from public.maso_status"));
+    assert.ok(before.growth_points >= 40, "fixture needs 40 points");
+    const exchanged = await asUser(B, async () => (await one(exchangeSql, ["steak", 1, request(527), B])).result, { commit: true });
+    assert.equal(exchanged.growthPoints, before.growth_points - 40);
+    assert.equal(exchanged.items.steak, 1);
+    const fed = await asUser(B, async () => (await one(feedSql, ["steak", 1, request(528), B])).result, { commit: true });
+    assert.equal(fed.items.steak, 0);
+    const after = await asUser(B, () => one("select level, experience from public.maso_status"));
+    const total = (level, experience) => { let sum = experience; for (let l = 1; l < level; l += 1) sum += 100 * l; return sum; };
+    assert.equal(total(after.level, after.experience) - total(before.level, before.experience), 90);
+  });
+  await check("the legacy kinds still use their own columns", async () => {
+    const row = await asUser(A, () => one("select balance, protein_balance from public.foods"));
+    assert.equal(typeof row.balance, "number");
+    const items = await asUser(A, () => rows("select kind, balance from public.food_inventory order by kind"));
+    assert.deepEqual(items.map((item) => [item.kind, item.balance]), [["banana", 1]]);
+  });
+  await check("inventory rows cannot be written directly, even for oneself", async () => {
+    await denied(A, "insert into public.food_inventory (user_id, kind, balance) values ($1, 'steak', 999)", [A]);
+    await denied(A, "update public.food_inventory set balance = 999 where user_id = $1", [A]);
+    await denied(A, "delete from public.food_inventory where user_id = $1", [A]);
+  });
+  await check("the inventory only accepts the new kinds and non-negative balances", async () => {
+    await assert.rejects(() => db.query("insert into public.food_inventory (user_id, kind, balance) values ($1, 'onigiri', 1)", [C]), (error) => error.code === "23514");
+    await assert.rejects(() => db.query("insert into public.food_inventory (user_id, kind, balance) values ($1, 'steak', -1)", [C]), (error) => error.code === "23514");
+  });
 
   const beforeA = await snapshot(A);
   const beforeB = await snapshot(B);

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  EMPTY_FOOD_ITEMS,
+  FOOD_ITEMS,
+  FOOD_KINDS,
   clampItemActionAmount,
+  foodBalance,
+  totalFoodCount,
+  withFoodBalance,
   isValidItemActionAmount,
   maxExchangeAmount,
   workoutRewardAdjustment,
@@ -105,5 +111,52 @@ describe("workout reward adjustment", () => {
   it("ignores invalid volumes and negative balances safely", () => {
     expect(workoutRewardAdjustment({ granted: 5, volumeKg: Number.NaN, balance: 10 }).applied).toBe(-5);
     expect(workoutRewardAdjustment({ granted: 5, volumeKg: 0, balance: -3 }).applied).toBe(0);
+  });
+});
+
+describe("food items", () => {
+  it("offers five kinds ordered from the cheapest", () => {
+    expect(FOOD_KINDS).toEqual(["banana", "onigiri", "chicken", "protein", "steak"]);
+    const costs = FOOD_KINDS.map((kind) => FOOD_ITEMS[kind].growthPointCost);
+    expect(costs).toEqual([...costs].sort((a, b) => a - b));
+  });
+
+  it("keeps every kind worth between 2.0 and 2.25 experience per point", () => {
+    for (const kind of FOOD_KINDS) {
+      const item = FOOD_ITEMS[kind];
+      const ratio = item.experience / item.growthPointCost;
+
+      expect(ratio, kind).toBeGreaterThanOrEqual(2);
+      expect(ratio, kind).toBeLessThanOrEqual(2.25);
+    }
+  });
+
+  it("limits an exchange by each kind's price", () => {
+    expect(maxExchangeAmount(7, "banana")).toBe(3);
+    expect(maxExchangeAmount(39, "steak")).toBe(0);
+    expect(maxExchangeAmount(80, "steak")).toBe(2);
+    expect(maxExchangeAmount(25, "chicken")).toBe(2);
+  });
+
+  const inventory = { food: 4, protein: 2, items: { banana: 7, chicken: 0, steak: 1 } };
+
+  it("reads each kind from the right place", () => {
+    expect(foodBalance(inventory, "onigiri")).toBe(4);
+    expect(foodBalance(inventory, "protein")).toBe(2);
+    expect(foodBalance(inventory, "banana")).toBe(7);
+    expect(foodBalance(inventory, "chicken")).toBe(0);
+    expect(foodBalance(inventory, "steak")).toBe(1);
+  });
+
+  it("changes one kind without touching the others", () => {
+    expect(withFoodBalance(inventory, "banana", 3)).toEqual({ ...inventory, items: { ...inventory.items, banana: 3 } });
+    expect(withFoodBalance(inventory, "onigiri", 0)).toEqual({ ...inventory, food: 0 });
+    expect(withFoodBalance(inventory, "protein", 9)).toEqual({ ...inventory, protein: 9 });
+    expect(inventory.items.banana).toBe(7);
+  });
+
+  it("counts every kind in the total", () => {
+    expect(totalFoodCount(inventory)).toBe(4 + 2 + 7 + 0 + 1);
+    expect(totalFoodCount({ food: 0, protein: 0, items: EMPTY_FOOD_ITEMS })).toBe(0);
   });
 });

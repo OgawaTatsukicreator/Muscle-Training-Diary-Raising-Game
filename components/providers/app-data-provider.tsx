@@ -35,8 +35,14 @@ import {
   storedNameSchema,
 } from "@/lib/domain/display-name";
 import { describeRpcError, settle } from "@/lib/errors/rpc-error";
+import { foodFailure } from "@/lib/errors/food-error";
 import { workoutFailure } from "@/lib/errors/workout-error";
-import { isValidItemActionAmount, type FoodKind } from "@/lib/domain/growth";
+import {
+  EMPTY_FOOD_ITEMS,
+  isValidItemActionAmount,
+  type FoodItems,
+  type FoodKind,
+} from "@/lib/domain/growth";
 import {
   CALCULATION_PATTERNS,
   type CustomExerciseOptions,
@@ -135,6 +141,7 @@ const EMPTY_CLOUD_STATE: CloudDataState = {
     growthPoints: 0,
     food: 0,
     protein: 0,
+    items: { ...EMPTY_FOOD_ITEMS },
   },
 };
 
@@ -217,6 +224,32 @@ const foodRowSchema = z.object({
   protein_balance: z.number().int().min(0),
 });
 
+const foodInventoryRowSchema = z.object({
+  kind: z.enum(["banana", "chicken", "steak"]),
+  balance: z.number().int().min(0),
+});
+
+// RPC結果の items。古いサーバー(0007未適用)では無いので0で補う
+const foodItemsSchema = z
+  .object({
+    banana: z.number().int().min(0).default(0),
+    chicken: z.number().int().min(0).default(0),
+    steak: z.number().int().min(0).default(0),
+  })
+  .default({ ...EMPTY_FOOD_ITEMS });
+
+function foodItemsFromRows(
+  rows: { kind: "banana" | "chicken" | "steak"; balance: number }[],
+): FoodItems {
+  const items: FoodItems = { ...EMPTY_FOOD_ITEMS };
+
+  for (const row of rows) {
+    items[row.kind] = row.balance;
+  }
+
+  return items;
+}
+
 const saveWorkoutResultSchema = z.object({
   id: z.string().uuid(),
   volumeKg: z.coerce.number().finite().min(0),
@@ -255,6 +288,7 @@ const itemInventoryResultSchema = z.object({
   growthPoints: z.number().int().min(0),
   food: z.number().int().min(0),
   protein: z.number().int().min(0),
+  items: foodItemsSchema,
   created: z.boolean(),
 });
 
@@ -263,6 +297,7 @@ const feedMasoItemResultSchema = z.object({
   experience: z.number().int().min(0).max(99_900),
   food: z.number().int().min(0),
   protein: z.number().int().min(0),
+  items: foodItemsSchema,
   created: z.boolean(),
 });
 
@@ -299,13 +334,6 @@ function fieldErrors(error: z.ZodError): Record<string, string> {
 
 function cloudFailure(message: string): ActionResult<never> {
   return { ok: false, message };
-}
-
-function missingRpc(error: { code?: string; message?: string } | null): boolean {
-  return (
-    error?.code === "PGRST202" ||
-    Boolean(error?.message?.includes("Could not find the function"))
-  );
 }
 
 async function loadAllExerciseRows(
@@ -409,6 +437,7 @@ async function loadCloudData(
     masoResult,
     foodResult,
     bodyWeightResult,
+    inventoryResult,
   ] =
     await Promise.all([
       supabase
@@ -439,6 +468,10 @@ async function loadCloudData(
         .eq("user_id", userId)
         .order("log_date", { ascending: false })
         .limit(CLOUD_BODY_WEIGHT_LIMIT),
+      supabase
+        .from("food_inventory")
+        .select("kind, balance")
+        .eq("user_id", userId),
     ]);
 
   const firstError = [
@@ -447,6 +480,7 @@ async function loadCloudData(
     masoResult.error,
     foodResult.error,
     bodyWeightResult.error,
+    inventoryResult.error,
   ].find(Boolean);
 
   if (firstError) {
@@ -459,6 +493,9 @@ async function loadCloudData(
   const workoutRows = z.array(workoutRowSchema).parse(workoutRowsResult);
   const masoRow = masoRowSchema.parse(masoResult.data);
   const foodRow = foodRowSchema.parse(foodResult.data);
+  const foodItems = foodItemsFromRows(
+    z.array(foodInventoryRowSchema).parse(inventoryResult.data ?? []),
+  );
   const bodyWeights = z
     .array(bodyWeightRowSchema)
     .parse(bodyWeightResult.data ?? [])
@@ -521,6 +558,7 @@ async function loadCloudData(
       growthPoints: masoRow.growth_points,
       food: foodRow.balance,
       protein: foodRow.protein_balance,
+      items: foodItems,
     },
   };
 }
@@ -1177,23 +1215,25 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("交換する個数を確認してください。");
       }
 
-      const { data, error } = await supabase.rpc("exchange_food", {
-        p_kind: kind,
-        p_amount: amount,
-        p_request_id: clientRequestId,
-        p_expected_user_id: authState.userId,
-      });
+      const { data, error } = await settle(() =>
+        supabase.rpc("exchange_food", {
+          p_kind: kind,
+          p_amount: amount,
+          p_request_id: clientRequestId,
+          p_expected_user_id: operationUserId,
+        }),
+      );
 
       if (activeUserIdRef.current !== operationUserId) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
       if (error) {
-        return cloudFailure(
-          missingRpc(error)
-            ? "クラウド版のアイテム交換は、データベース更新後に利用できます。"
-            : "アイテムを交換できませんでした。残高と通信状態を確認してください。",
-        );
+        const failure = foodFailure(error, "exchange");
+        if (failure.shouldRefresh) {
+          await refreshCloudData();
+        }
+        return cloudFailure(failure.message);
       }
 
       const result = itemInventoryResultSchema.safeParse(data);
@@ -1213,6 +1253,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         growthPoints: result.data.growthPoints,
         food: result.data.food,
         protein: result.data.protein,
+        items: result.data.items,
       };
       setCloudState((current) => ({ ...current, maso: nextMaso }));
       setCloudIssue(null);
@@ -1251,23 +1292,25 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("あげる個数を確認してください。");
       }
 
-      const { data, error } = await supabase.rpc("feed_maso_item", {
-        p_kind: kind,
-        p_amount: amount,
-        p_request_id: clientRequestId,
-        p_expected_user_id: authState.userId,
-      });
+      const { data, error } = await settle(() =>
+        supabase.rpc("feed_maso_item", {
+          p_kind: kind,
+          p_amount: amount,
+          p_request_id: clientRequestId,
+          p_expected_user_id: operationUserId,
+        }),
+      );
 
       if (activeUserIdRef.current !== operationUserId) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
       if (error) {
-        return cloudFailure(
-          missingRpc(error)
-            ? "クラウド版のエサやりは、データベース更新後に利用できます。"
-            : "エサをあげられませんでした。所持数と通信状態を確認してください。",
-        );
+        const failure = foodFailure(error, "feed");
+        if (failure.shouldRefresh) {
+          await refreshCloudData();
+        }
+        return cloudFailure(failure.message);
       }
 
       const result = feedMasoItemResultSchema.safeParse(data);
@@ -1288,6 +1331,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         experience: result.data.experience,
         food: result.data.food,
         protein: result.data.protein,
+        items: result.data.items,
       };
       setCloudState((current) => ({ ...current, maso: nextMaso }));
       setCloudIssue(null);
