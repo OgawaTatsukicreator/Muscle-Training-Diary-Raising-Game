@@ -13,7 +13,16 @@ import {
 import { z } from "zod";
 
 import { DEFAULT_EXERCISES } from "@/lib/data/default-exercises";
-import { defaultsForCustomExercise } from "@/lib/domain/load";
+import {
+  bodyWeightEntrySchema,
+  latestBodyWeightKg,
+  upsertBodyWeight,
+  type BodyWeightEntry,
+} from "@/lib/domain/body-weight";
+import {
+  defaultsForCustomExercise,
+  type CustomExerciseOptions,
+} from "@/lib/domain/load";
 import { dateKeyInTimeZone } from "@/lib/domain/date";
 import {
   applyExperience,
@@ -22,10 +31,9 @@ import {
   rewardsFromVolume,
   type FoodKind,
 } from "@/lib/domain/growth";
+import { evaluateWorkoutDraft } from "@/lib/domain/workout-load";
 import {
-  calculateVolumeKg,
   exerciseSchema,
-  toKilograms,
   type BodyPart,
   type Exercise,
   type UserSettings,
@@ -39,6 +47,7 @@ import {
 const STORAGE_KEY = "maso-diary:local-preview:v1";
 const MAX_LOCAL_RECORDS = 5_000;
 const MAX_LOCAL_EXERCISES = 1_000;
+const MAX_LOCAL_BODY_WEIGHTS = 3_700;
 
 const masoStatusSchema = z
   .object({
@@ -58,6 +67,11 @@ const persistedStateSchema = z
     version: z.literal(1),
     records: z.array(workoutRecordSchema).max(MAX_LOCAL_RECORDS),
     exercises: z.array(exerciseSchema).max(MAX_LOCAL_EXERCISES),
+    // 換算パターン導入前に保存されたデータには無いため既定値を補う
+    bodyWeights: z
+      .array(bodyWeightEntrySchema)
+      .max(MAX_LOCAL_BODY_WEIGHTS)
+      .default([]),
     settings: userSettingsSchema,
     maso: masoStatusSchema,
   })
@@ -76,7 +90,15 @@ export type DemoDataContextValue = DemoDataState & {
     draft: WorkoutDraft,
     clientRequestId: string,
   ) => ActionResult<WorkoutRecord>;
-  addExercise: (name: string, bodyPart: BodyPart) => ActionResult<Exercise>;
+  addExercise: (
+    name: string,
+    bodyPart: BodyPart,
+    options?: CustomExerciseOptions,
+  ) => ActionResult<Exercise>;
+  saveBodyWeight: (
+    date: string,
+    weightKg: number,
+  ) => ActionResult<BodyWeightEntry>;
   updateSettings: (settings: UserSettings) => ActionResult<UserSettings>;
   exchangeGrowthPoints: (
     kind: FoodKind,
@@ -91,6 +113,7 @@ const initialState: DemoDataState = {
   version: 1,
   records: [],
   exercises: DEFAULT_EXERCISES,
+  bodyWeights: [],
   settings: { defaultSets: 3, weightUnit: "kg" },
   maso: {
     name: "マソ君",
@@ -226,13 +249,22 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         };
       }
 
-      const volumeKg = calculateVolumeKg(
-        parsed.data.weight,
-        parsed.data.unit,
-        parsed.data.reps,
-        parsed.data.sets,
+      const evaluation = evaluateWorkoutDraft(
+        parsed.data,
+        exercise,
+        latestBodyWeightKg(state.bodyWeights, parsed.data.workoutDate),
       );
-      const weightKg = toKilograms(parsed.data.weight, parsed.data.unit);
+
+      if (!evaluation.ok) {
+        return {
+          ok: false,
+          message: "入力内容を確認してください。",
+          fieldErrors: evaluation.fieldErrors,
+        };
+      }
+
+      const { weightKg, assistKg, bodyWeightKg, loadPerUnitKg, volumeKg } =
+        evaluation.value;
       const record: WorkoutRecord = {
         id: crypto.randomUUID(),
         clientRequestId,
@@ -244,6 +276,9 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         reps: parsed.data.reps,
         sets: parsed.data.sets,
         volumeKg,
+        bodyWeightKg,
+        assistKg,
+        loadPerUnitKg,
         memo: parsed.data.memo,
         createdAt: new Date().toISOString(),
       };
@@ -269,6 +304,13 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         return {
           ...current,
           records: [...current.records, record],
+          bodyWeights:
+            parsed.data.bodyWeightKg === null
+              ? current.bodyWeights
+              : upsertBodyWeight(current.bodyWeights, {
+                  date: parsed.data.workoutDate,
+                  weightKg: parsed.data.bodyWeightKg,
+                }),
           maso: {
             ...current.maso,
             growthPoints: current.maso.growthPoints + rewards.growthPoints,
@@ -279,6 +321,7 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
       return { ok: true, data: record };
     },
     [
+      state.bodyWeights,
       state.exercises,
       state.maso.growthPoints,
       state.records,
@@ -286,7 +329,11 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
   );
 
   const addExercise = useCallback(
-    (name: string, bodyPart: BodyPart): ActionResult<Exercise> => {
+    (
+      name: string,
+      bodyPart: BodyPart,
+      options?: CustomExerciseOptions,
+    ): ActionResult<Exercise> => {
       if (!canPersistRef.current) {
         return {
           ok: false,
@@ -326,7 +373,7 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         name: normalizedName,
         bodyPart,
         isDefault: false,
-        ...defaultsForCustomExercise(bodyPart),
+        ...defaultsForCustomExercise(bodyPart, options),
       };
 
       setState((current) => ({
@@ -337,6 +384,34 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
       return { ok: true, data: exercise };
     },
     [state.exercises],
+  );
+
+  const saveBodyWeight = useCallback(
+    (date: string, weightKg: number): ActionResult<BodyWeightEntry> => {
+      if (!canPersistRef.current) {
+        return {
+          ok: false,
+          message: "保存データを確認できないため、体重を記録できません。",
+        };
+      }
+
+      const parsed = bodyWeightEntrySchema.safeParse({ date, weightKg });
+
+      if (!parsed.success) {
+        return { ok: false, message: "体重は20〜300kgで入力してください。" };
+      }
+
+      if (parsed.data.date > dateKeyInTimeZone()) {
+        return { ok: false, message: "未来日の体重は記録できません。" };
+      }
+
+      setState((current) => ({
+        ...current,
+        bodyWeights: upsertBodyWeight(current.bodyWeights, parsed.data),
+      }));
+      return { ok: true, data: parsed.data };
+    },
+    [],
   );
 
   const updateSettings = useCallback(
@@ -470,6 +545,7 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
       storageIssue,
       addWorkout,
       addExercise,
+      saveBodyWeight,
       updateSettings,
       exchangeGrowthPoints,
       feedMaso,
@@ -479,6 +555,7 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
     [
       addExercise,
       addWorkout,
+      saveBodyWeight,
       clearLocalData,
       exchangeGrowthPoints,
       feedMaso,

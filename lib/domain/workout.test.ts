@@ -69,15 +69,28 @@ describe("workout draft realism limits", () => {
   });
 
   it.each([
-    ["zero weight", { weight: 0 }],
     ["negative weight", { weight: -5 }],
     ["over 500kg", { weight: 501 }],
     ["over 500kg in lb", { weight: 1200, unit: "lb" as const }],
-    ["too many reps", { reps: 201 }],
+    ["more than 600 reps", { reps: 601 }],
     ["too many sets", { sets: 31 }],
     ["fractional reps", { reps: 10.5 }],
+    ["negative assistance", { assist: -1 }],
+    ["assistance over 500kg", { assist: 501 }],
+    ["body weight under 20kg", { bodyWeightKg: 19 }],
+    ["body weight over 300kg", { bodyWeightKg: 301 }],
   ])("rejects %s", (_name, override) => {
     expect(workoutDraftSchema.safeParse({ ...base, ...override }).success).toBe(false);
+  });
+
+  it("defaults assistance to 0 and body weight to null", () => {
+    const parsed = workoutDraftSchema.parse(base);
+    expect(parsed.assist).toBe(0);
+    expect(parsed.bodyWeightKg).toBeNull();
+  });
+
+  it("lets zero weight through the schema; the exercise pattern decides later", () => {
+    expect(workoutDraftSchema.safeParse({ ...base, weight: 0 }).success).toBe(true);
   });
 });
 

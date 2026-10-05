@@ -1,7 +1,12 @@
 import { z } from "zod";
 
 import { isDateKey } from "@/lib/domain/date";
-import { CALCULATION_PATTERNS } from "@/lib/domain/load";
+import {
+  CALCULATION_PATTERNS,
+  MAX_BODY_WEIGHT_KG,
+  MAX_ISOMETRIC_SECONDS,
+  MIN_BODY_WEIGHT_KG,
+} from "@/lib/domain/load";
 
 export const BODY_PARTS = [
   "chest",
@@ -59,22 +64,49 @@ export const workoutDraftSchema = z
     weight: z
       .number({ error: "重量を入力してください" })
       .finite()
-      .gt(0, "重量は0より大きい値を入力してください"),
+      // パターンA(外部ウエイトのみ)の0kgは種目が分かる evaluateWorkoutDraft で弾く
+      .min(0, "重量は0以上で入力してください"),
     unit: weightUnitSchema,
     reps: z
       .number()
       .int("回数は整数で入力してください")
       .min(1, "回数は1以上で入力してください")
-      .max(MAX_REPS, `回数は${MAX_REPS}回以内で入力してください`),
+      // 静的種目は秒数入力のため上限が大きい。通常種目のMAX_REPSは evaluateWorkoutDraft で判定
+      .max(MAX_ISOMETRIC_SECONDS, `回数は${MAX_ISOMETRIC_SECONDS}以内で入力してください`),
     sets: z
       .number()
       .int("セット数は整数で入力してください")
       .min(1, "セット数は1以上で入力してください")
       .max(MAX_SETS, `セット数は${MAX_SETS}セット以内で入力してください`),
+    // パターンDのマシンアシスト(unit単位)。D以外では無視される
+    assist: z
+      .number({ error: "アシスト重量を確認してください" })
+      .finite()
+      .min(0, "アシスト重量は0以上で入力してください")
+      .default(0),
+    // その日の体重(kg)。未入力は null で、直近の記録を使う
+    bodyWeightKg: z
+      .number({ error: "体重を確認してください" })
+      .finite()
+      .min(MIN_BODY_WEIGHT_KG, `体重は${MIN_BODY_WEIGHT_KG}〜${MAX_BODY_WEIGHT_KG}kgで入力してください`)
+      .max(MAX_BODY_WEIGHT_KG, `体重は${MIN_BODY_WEIGHT_KG}〜${MAX_BODY_WEIGHT_KG}kgで入力してください`)
+      .nullable()
+      .default(null),
     memo: z.string().trim().max(500, "メモは500文字以内で入力してください"),
   })
   .strict()
   .superRefine((draft, context) => {
+    if (
+      Number.isFinite(draft.assist) &&
+      toKilograms(draft.assist, draft.unit) > MAX_WEIGHT_KG
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["assist"],
+        message: `アシスト重量は${MAX_WEIGHT_KG}kg以内で入力してください`,
+      });
+    }
+
     if (
       Number.isFinite(draft.weight) &&
       toKilograms(draft.weight, draft.unit) > MAX_WEIGHT_KG
@@ -102,6 +134,10 @@ export const workoutRecordSchema = z
     sets: z.number().int().min(1).max(100),
     volumeKg: z.number().finite().min(0).max(200_000_000),
     memo: z.string().max(500),
+    // 換算パターン導入前の記録は null / 0。その場合の1回あたり負荷は weightKg と同じ
+    bodyWeightKg: z.number().finite().min(0).nullable().default(null),
+    assistKg: z.number().finite().min(0).default(0),
+    loadPerUnitKg: z.number().finite().min(0).nullable().default(null),
     createdAt: z.string().datetime(),
   })
   .strict();

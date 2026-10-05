@@ -17,6 +17,14 @@ export type CalculationPattern = (typeof CALCULATION_PATTERNS)[number];
 /** 静的種目(プランク等)は秒数で入力し、この秒数を1レップとして換算する。 */
 export const ISOMETRIC_SECONDS_PER_REP = 10;
 
+/** 入力の許容範囲。DB(supabase/migrations/0003)の検証と揃えること。 */
+export const MIN_BODY_WEIGHT_KG = 20;
+export const MAX_BODY_WEIGHT_KG = 300;
+/** 静的種目は秒数入力のため、回数の上限が大きい */
+export const MAX_ISOMETRIC_SECONDS = 600;
+/** 1回の記録で許容するボリュームの上限(明らかな入力ミス・不正値の防止) */
+export const MAX_VOLUME_KG = 50_000;
+
 /** ユーザー追加種目に割り当てる標準の体重係数。 */
 export const CUSTOM_BW_RATIO = {
   /** 脚の種目で「自重も使う」と答えた場合(ランジ系の係数に合わせる) */
@@ -24,6 +32,13 @@ export const CUSTOM_BW_RATIO = {
   /** 腹の種目(クランチ0.40〜シットアップ0.60の中間) */
   abs: 0.5,
 } as const;
+
+export const CALCULATION_PATTERN_LABELS: Record<CalculationPattern, string> = {
+  A: "ウエイト",
+  B: "体重+ウエイト",
+  C: "自重",
+  D: "自重(ぶら下がり・支持)",
+};
 
 export function patternUsesBodyWeight(pattern: CalculationPattern): boolean {
   return pattern !== "A";
@@ -41,8 +56,9 @@ export interface LoadInput {
   assistKg?: number;
 }
 
-function roundLoad(value: number): number {
-  return Math.round((value + Number.EPSILON) * 1000) / 1000;
+function roundTo(value: number, digits: number): number {
+  const multiplier = 10 ** digits;
+  return Math.round((value + Number.EPSILON) * multiplier) / multiplier;
 }
 
 /**
@@ -77,7 +93,8 @@ export function calculateLoadPerUnitKg(input: LoadInput): number | null {
     return null;
   }
 
-  return roundLoad(isIsometric ? load / ISOMETRIC_SECONDS_PER_REP : load);
+  // DBの load_per_unit_kg(小数4桁)と同じ丸め
+  return roundTo(isIsometric ? load / ISOMETRIC_SECONDS_PER_REP : load, 4);
 }
 
 /** 総ボリューム = 1単位あたり負荷 × 回数(静的種目は秒数) × セット数。 */
@@ -98,7 +115,7 @@ export function calculateVolumeFromLoad(
     return 0;
   }
 
-  return roundLoad(loadPerUnitKg * Math.floor(reps) * Math.floor(sets));
+  return roundTo(loadPerUnitKg * Math.floor(reps) * Math.floor(sets), 3);
 }
 
 export interface CustomExerciseOptions {

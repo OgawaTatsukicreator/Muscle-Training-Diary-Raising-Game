@@ -21,12 +21,22 @@ import {
   type DemoDataState,
   type MasoStatus,
 } from "@/components/providers/demo-data-provider";
+import {
+  bodyWeightEntrySchema,
+  latestBodyWeightKg,
+  upsertBodyWeight,
+  type BodyWeightEntry,
+} from "@/lib/domain/body-weight";
 import { dateKeyInTimeZone } from "@/lib/domain/date";
 import { isValidItemActionAmount, type FoodKind } from "@/lib/domain/growth";
 import {
+  CALCULATION_PATTERNS,
+  type CustomExerciseOptions,
+} from "@/lib/domain/load";
+import { evaluateWorkoutDraft } from "@/lib/domain/workout-load";
+import {
   bodyPartSchema,
   exerciseSchema,
-  toKilograms,
   userSettingsSchema,
   workoutDraftSchema,
   workoutRecordSchema,
@@ -56,7 +66,12 @@ type AsyncDataActions = {
   addExercise: (
     name: string,
     bodyPart: BodyPart,
+    options?: CustomExerciseOptions,
   ) => Promise<ActionResult<Exercise>>;
+  saveBodyWeight: (
+    date: string,
+    weightKg: number,
+  ) => Promise<ActionResult<BodyWeightEntry>>;
   updateSettings: (
     settings: UserSettings,
   ) => Promise<ActionResult<UserSettings>>;
@@ -94,6 +109,7 @@ const EMPTY_CLOUD_STATE: CloudDataState = {
   profile: { displayName: "トレーニー" },
   records: [],
   exercises: [],
+  bodyWeights: [],
   settings: { defaultSets: 3, weightUnit: "kg" },
   maso: {
     name: "マソ君",
@@ -119,6 +135,36 @@ const exerciseRowSchema = z.object({
   name: z.string().trim().min(1).max(60),
   body_part: bodyPartSchema,
   is_default: z.boolean(),
+  calculation_pattern: z.enum(CALCULATION_PATTERNS),
+  bw_ratio: z.coerce.number().finite().min(0).max(1),
+  is_isometric: z.boolean(),
+});
+
+// PostgREST returns numeric columns as numbers or strings, and NULL as null.
+const nullableNumericSchema = z
+  .union([z.number(), z.string()])
+  .nullable()
+  .transform((value) => (value === null ? null : Number(value)))
+  .pipe(z.number().finite().nullable());
+
+const bodyWeightRowSchema = z.object({
+  log_date: z.string(),
+  weight_kg: z.coerce.number().finite(),
+});
+
+const addExerciseResultSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().trim().min(1).max(60),
+  bodyPart: bodyPartSchema,
+  isDefault: z.boolean(),
+  calculationPattern: z.enum(CALCULATION_PATTERNS),
+  bwRatio: z.coerce.number().finite().min(0).max(1),
+  isIsometric: z.boolean(),
+});
+
+const saveBodyWeightResultSchema = z.object({
+  date: z.string(),
+  weightKg: z.coerce.number().finite(),
 });
 
 const databaseDateTimeSchema = z
@@ -135,6 +181,9 @@ const workoutRowSchema = z.object({
   reps: z.number().int().min(1).max(1000),
   sets: z.number().int().min(1).max(100),
   volume_kg: z.coerce.number().finite().min(0).max(200_000_000),
+  body_weight_kg: nullableNumericSchema,
+  assist_kg: z.coerce.number().finite().min(0),
+  load_per_unit_kg: z.coerce.number().finite().min(0),
   memo: z.string().max(500),
   created_at: databaseDateTimeSchema,
 });
@@ -154,6 +203,8 @@ const foodRowSchema = z.object({
 const saveWorkoutResultSchema = z.object({
   id: z.string().uuid(),
   volumeKg: z.coerce.number().finite().min(0),
+  loadPerUnitKg: z.coerce.number().finite().min(0),
+  bodyWeightKg: nullableNumericSchema.optional(),
   growthPoints: z.number().int().min(0),
   food: z.number().int().min(0),
   created: z.boolean(),
@@ -180,6 +231,8 @@ const feedMasoItemResultSchema = z.object({
 
 const AppDataContext = createContext<AppDataContextValue | null>(null);
 const CLOUD_PAGE_SIZE = 500;
+// 直近の体重のみ取得する(PostgRESTの既定上限1000行に合わせる)
+const CLOUD_BODY_WEIGHT_LIMIT = 1000;
 
 type CloudPageCursor = {
   createdAt: string;
@@ -228,7 +281,9 @@ async function loadAllExerciseRows(
   for (;;) {
     let query = supabase
       .from("exercises")
-      .select("id, name, body_part, is_default, created_at")
+      .select(
+        "id, name, body_part, is_default, calculation_pattern, bw_ratio, is_isometric, created_at",
+      )
       .eq("user_id", userId)
       .order("created_at")
       .order("id")
@@ -271,7 +326,7 @@ async function loadAllWorkoutRows(
     let query = supabase
       .from("workout_logs")
       .select(
-        "id, client_request_id, workout_date, exercise_id, weight_kg, reps, sets, volume_kg, memo, created_at",
+        "id, client_request_id, workout_date, exercise_id, weight_kg, reps, sets, volume_kg, body_weight_kg, assist_kg, load_per_unit_kg, memo, created_at",
       )
       .eq("user_id", userId)
       .is("deleted_at", null)
@@ -309,7 +364,15 @@ async function loadCloudData(
   supabase: SupabaseBrowserClient,
   userId: string,
 ): Promise<CloudDataState> {
-  const [profileResult, settingsResult, exerciseRowsResult, workoutRowsResult, masoResult, foodResult] =
+  const [
+    profileResult,
+    settingsResult,
+    exerciseRowsResult,
+    workoutRowsResult,
+    masoResult,
+    foodResult,
+    bodyWeightResult,
+  ] =
     await Promise.all([
       supabase
         .from("profiles")
@@ -333,6 +396,12 @@ async function loadCloudData(
         .select("balance, protein_balance")
         .eq("user_id", userId)
         .single(),
+      supabase
+        .from("body_weight_logs")
+        .select("log_date, weight_kg")
+        .eq("user_id", userId)
+        .order("log_date", { ascending: false })
+        .limit(CLOUD_BODY_WEIGHT_LIMIT),
     ]);
 
   const firstError = [
@@ -340,6 +409,7 @@ async function loadCloudData(
     settingsResult.error,
     masoResult.error,
     foodResult.error,
+    bodyWeightResult.error,
   ].find(Boolean);
 
   if (firstError) {
@@ -352,12 +422,22 @@ async function loadCloudData(
   const workoutRows = z.array(workoutRowSchema).parse(workoutRowsResult);
   const masoRow = masoRowSchema.parse(masoResult.data);
   const foodRow = foodRowSchema.parse(foodResult.data);
+  const bodyWeights = z
+    .array(bodyWeightRowSchema)
+    .parse(bodyWeightResult.data ?? [])
+    .map((row) =>
+      bodyWeightEntrySchema.parse({ date: row.log_date, weightKg: row.weight_kg }),
+    )
+    .reverse();
   const exercises = exerciseRows.map((row) =>
     exerciseSchema.parse({
       id: row.id,
       name: row.name,
       bodyPart: row.body_part,
       isDefault: row.is_default,
+      calculationPattern: row.calculation_pattern,
+      bwRatio: row.bw_ratio,
+      isIsometric: row.is_isometric,
     }),
   );
   const exerciseById = new Map(exercises.map((exercise) => [exercise.id, exercise]));
@@ -379,6 +459,9 @@ async function loadCloudData(
       reps: row.reps,
       sets: row.sets,
       volumeKg: row.volume_kg,
+      bodyWeightKg: row.body_weight_kg,
+      assistKg: row.assist_kg,
+      loadPerUnitKg: row.load_per_unit_kg,
       memo: row.memo,
       createdAt: row.created_at,
     });
@@ -389,6 +472,7 @@ async function loadCloudData(
     profile: { displayName: profileRow.display_name },
     records,
     exercises,
+    bodyWeights,
     settings: userSettingsSchema.parse({
       defaultSets: settingsRow.default_sets,
       weightUnit: settingsRow.weight_unit,
@@ -609,6 +693,19 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("選択した種目を確認できませんでした。部位から選び直してください。");
       }
 
+      const evaluation = evaluateWorkoutDraft(
+        parsed.data,
+        exercise,
+        latestBodyWeightKg(cloudState.bodyWeights, parsed.data.workoutDate),
+      );
+      if (!evaluation.ok) {
+        return {
+          ok: false,
+          message: "入力内容を確認してください。",
+          fieldErrors: evaluation.fieldErrors,
+        };
+      }
+
       const { data, error } = await supabase.rpc("save_workout", {
         p_exercise_id: parsed.data.exerciseId,
         p_workout_date: parsed.data.workoutDate,
@@ -618,6 +715,8 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         p_sets: parsed.data.sets,
         p_memo: parsed.data.memo,
         p_request_id: clientRequestId,
+        p_body_weight_kg: parsed.data.bodyWeightKg,
+        p_assist: parsed.data.assist,
       });
 
       if (activeUserIdRef.current !== operationUserId) {
@@ -647,10 +746,13 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         exerciseId: exercise.id,
         exerciseName: exercise.name,
         bodyPart: exercise.bodyPart,
-        weightKg: toKilograms(parsed.data.weight, parsed.data.unit),
+        weightKg: evaluation.value.weightKg,
         reps: parsed.data.reps,
         sets: parsed.data.sets,
         volumeKg: result.data.volumeKg,
+        bodyWeightKg: result.data.bodyWeightKg ?? evaluation.value.bodyWeightKg,
+        assistKg: evaluation.value.assistKg,
+        loadPerUnitKg: result.data.loadPerUnitKg,
         memo: parsed.data.memo.trim(),
         createdAt: new Date().toISOString(),
       });
@@ -662,6 +764,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
     [
       authState.userId,
       cloudReady,
+      cloudState.bodyWeights,
       cloudState.exercises,
       local,
       refreshCloudData,
@@ -671,9 +774,13 @@ function AppDataBridge({ children }: { children: ReactNode }) {
   );
 
   const addExercise = useCallback(
-    async (name: string, bodyPart: BodyPart): Promise<ActionResult<Exercise>> => {
+    async (
+      name: string,
+      bodyPart: BodyPart,
+      options?: CustomExerciseOptions,
+    ): Promise<ActionResult<Exercise>> => {
       if (usingLocal) {
-        return local.addExercise(name, bodyPart);
+        return local.addExercise(name, bodyPart, options);
       }
 
       if (!supabase || !authState.userId || !cloudReady) {
@@ -702,15 +809,13 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return { ok: true, data: existing };
       }
 
-      const { data, error } = await supabase
-        .from("exercises")
-        .insert({
-          user_id: authState.userId,
-          name: normalizedName,
-          body_part: bodyPart,
-        })
-        .select("id, name, body_part, is_default")
-        .single();
+      // 換算パターンは部位と質問への回答からサーバー側で決まる
+      const { data, error } = await supabase.rpc("add_exercise", {
+        p_name: normalizedName,
+        p_body_part: bodyPart,
+        p_uses_bodyweight: options?.usesBodyweight === true,
+        p_is_isometric: options?.isIsometric === true,
+      });
 
       if (activeUserIdRef.current !== operationUserId) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
@@ -720,7 +825,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("種目を追加できませんでした。同じ種目がないか確認してください。");
       }
 
-      const row = exerciseRowSchema.safeParse(data);
+      const row = addExerciseResultSchema.safeParse(data);
       if (!row.success) {
         return cloudFailure("追加した種目を確認できませんでした。ページを再読み込みしてください。");
       }
@@ -728,12 +833,17 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       const exercise = exerciseSchema.parse({
         id: row.data.id,
         name: row.data.name,
-        bodyPart: row.data.body_part,
-        isDefault: row.data.is_default,
+        bodyPart: row.data.bodyPart,
+        isDefault: row.data.isDefault,
+        calculationPattern: row.data.calculationPattern,
+        bwRatio: row.data.bwRatio,
+        isIsometric: row.data.isIsometric,
       });
       setCloudState((current) => ({
         ...current,
-        exercises: [...current.exercises, exercise],
+        exercises: current.exercises.some((item) => item.id === exercise.id)
+          ? current.exercises
+          : [...current.exercises, exercise],
       }));
       setCloudIssue(null);
       return { ok: true, data: exercise };
@@ -746,6 +856,63 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       supabase,
       usingLocal,
     ],
+  );
+
+  const saveBodyWeight = useCallback(
+    async (
+      date: string,
+      weightKg: number,
+    ): Promise<ActionResult<BodyWeightEntry>> => {
+      if (usingLocal) {
+        return local.saveBodyWeight(date, weightKg);
+      }
+
+      if (!supabase || !authState.userId || !cloudReady) {
+        return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
+      }
+      const operationUserId = authState.userId;
+
+      const parsed = bodyWeightEntrySchema.safeParse({ date, weightKg });
+      if (!parsed.success) {
+        return cloudFailure("体重は20〜300kgで入力してください。");
+      }
+
+      if (parsed.data.date > dateKeyInTimeZone()) {
+        return cloudFailure("未来日の体重は記録できません。");
+      }
+
+      const { data, error } = await supabase.rpc("save_body_weight", {
+        p_log_date: parsed.data.date,
+        p_weight_kg: parsed.data.weightKg,
+      });
+
+      if (activeUserIdRef.current !== operationUserId) {
+        return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
+      }
+
+      if (error) {
+        return cloudFailure("体重をクラウドへ保存できませんでした。もう一度お試しください。");
+      }
+
+      const result = saveBodyWeightResultSchema.safeParse(data);
+      const entry = result.success
+        ? bodyWeightEntrySchema.safeParse({
+            date: result.data.date,
+            weightKg: result.data.weightKg,
+          })
+        : null;
+      if (!entry?.success) {
+        return cloudFailure("保存した体重を確認できませんでした。ページを再読み込みしてください。");
+      }
+
+      setCloudState((current) => ({
+        ...current,
+        bodyWeights: upsertBodyWeight(current.bodyWeights, entry.data),
+      }));
+      setCloudIssue(null);
+      return { ok: true, data: entry.data };
+    },
+    [authState.userId, cloudReady, local, supabase, usingLocal],
   );
 
   const updateSettings = useCallback(
@@ -1056,6 +1223,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
             },
       records: activeState.records,
       exercises: activeState.exercises,
+      bodyWeights: activeState.bodyWeights,
       settings: activeState.settings,
       maso: activeState.maso,
       isReady,
@@ -1073,6 +1241,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       retryStorage,
       addWorkout,
       addExercise,
+      saveBodyWeight,
       updateSettings,
       exchangeGrowthPoints,
       feedMaso,
@@ -1081,6 +1250,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       updateProfile,
     }),
     [
+      activeState.bodyWeights,
       activeState.exercises,
       activeState.maso,
       activeState.records,
@@ -1088,6 +1258,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       activeState.version,
       addExercise,
       addWorkout,
+      saveBodyWeight,
       clearLocalData,
       cloudReady,
       cloudIssue,
