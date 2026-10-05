@@ -44,6 +44,29 @@ export function patternUsesBodyWeight(pattern: CalculationPattern): boolean {
   return pattern !== "A";
 }
 
+/**
+ * 換算の対象にしない部位。記録(時間)は残すが、ボリュームは0で育成ポイントも付かない。
+ * 種目ごとの換算パターンは使わない。DBは exercises.body_part で判定する(0008)。
+ */
+export const UNCONVERTED_BODY_PARTS: readonly BodyPart[] = ["cardio"];
+
+/** 未換算の種目は「回数」の欄に時間(分)を入れる。上限は10時間。 */
+export const MAX_UNCONVERTED_MINUTES = 600;
+
+export function isUnconvertedBodyPart(bodyPart: BodyPart): boolean {
+  return UNCONVERTED_BODY_PARTS.includes(bodyPart);
+}
+
+/** 種目一覧に添える換算の種類。 */
+export function conversionLabel(exercise: {
+  bodyPart: BodyPart;
+  calculationPattern: CalculationPattern;
+}): string {
+  return isUnconvertedBodyPart(exercise.bodyPart)
+    ? "未換算"
+    : CALCULATION_PATTERN_LABELS[exercise.calculationPattern];
+}
+
 export interface LoadInput {
   pattern: CalculationPattern;
   bwRatio: number;

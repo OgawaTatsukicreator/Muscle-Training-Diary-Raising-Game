@@ -5,8 +5,12 @@ import { EXERCISE_MASTER } from "@/lib/data/exercise-master";
 import {
   calculateLoadPerUnitKg,
   calculateVolumeFromLoad,
+  conversionLabel,
   customExerciseQuestion,
   defaultsForCustomExercise,
+  isUnconvertedBodyPart,
+  MAX_UNCONVERTED_MINUTES,
+  UNCONVERTED_BODY_PARTS,
 } from "@/lib/domain/load";
 import { exerciseSchema } from "@/lib/domain/workout";
 
@@ -201,5 +205,30 @@ describe("exercise master", () => {
       id: "x", name: "旧種目", bodyPart: "chest", isDefault: false,
     });
     expect(parsed).toMatchObject({ calculationPattern: "A", bwRatio: 0, isIsometric: false });
+  });
+});
+
+describe("unconverted body parts", () => {
+  it("treats cardio, and only cardio, as unconverted", () => {
+    expect([...UNCONVERTED_BODY_PARTS]).toEqual(["cardio"]);
+    expect(isUnconvertedBodyPart("cardio")).toBe(true);
+    for (const part of ["chest", "back", "legs", "shoulders", "arms", "abs", "other"] as const) {
+      expect(isUnconvertedBodyPart(part), part).toBe(false);
+    }
+  });
+
+  it("labels the conversion shown in the exercise list", () => {
+    expect(conversionLabel({ bodyPart: "cardio", calculationPattern: "A" })).toBe("未換算");
+    expect(conversionLabel({ bodyPart: "chest", calculationPattern: "A" })).toBe("ウエイト");
+    expect(conversionLabel({ bodyPart: "abs", calculationPattern: "C" })).toBe("自重");
+  });
+
+  it("allows up to ten hours", () => {
+    expect(MAX_UNCONVERTED_MINUTES).toBe(600);
+  });
+
+  it("puts every cardio exercise of the master in that part", () => {
+    const cardio = EXERCISE_MASTER.filter((item) => isUnconvertedBodyPart(item.bodyPart));
+    expect(cardio.map((item) => item.name).sort()).toEqual(["ウォーキング", "ランニング"]);
   });
 });

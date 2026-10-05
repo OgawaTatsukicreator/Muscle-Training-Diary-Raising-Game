@@ -30,7 +30,7 @@ import {
   formatVolume,
   type WeightUnit,
 } from "@/lib/domain/workout";
-import { describeRecordLoad } from "@/lib/domain/workout-load";
+import { describeRecordLoad, isUnconvertedRecord } from "@/lib/domain/workout-load";
 
 const WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];
 
@@ -91,14 +91,21 @@ export function RecordsDashboard({
     (sum, record) => sum + record.volumeKg,
     0,
   );
-  const selectedSets = selectedRecords.reduce(
+  // 有酸素など未換算の記録は、回数欄が時間(分)なのでセット数・回数の合計に含めない
+  const convertedRecords = selectedRecords.filter(
+    (record) => !isUnconvertedRecord(record),
+  );
+  const selectedSets = convertedRecords.reduce(
     (sum, record) => sum + record.sets,
     0,
   );
-  const selectedReps = selectedRecords.reduce(
+  const selectedReps = convertedRecords.reduce(
     (sum, record) => sum + record.reps * record.sets,
     0,
   );
+  const selectedMinutes = selectedRecords
+    .filter(isUnconvertedRecord)
+    .reduce((sum, record) => sum + record.reps, 0);
   const today = dateKeyInTimeZone();
 
   function moveMonth(amount: number) {
@@ -435,6 +442,11 @@ export function RecordsDashboard({
                 </div>
               ))}
             </dl>
+            {selectedMinutes > 0 ? (
+              <p className="mt-2 text-xs font-bold text-muted">
+                有酸素 {selectedMinutes.toLocaleString("ja-JP")}分（未換算のため、ボリュームには含みません）
+              </p>
+            ) : null}
 
             {!isReady ? (
               <div className="mt-5 h-72 animate-pulse rounded-xl border border-line bg-canvas" />
@@ -471,7 +483,7 @@ export function RecordsDashboard({
                         </h2>
                       </div>
                       <p className="data-number shrink-0 text-base font-bold">
-                        {formatVolume(record.volumeKg)}
+                        {isUnconvertedRecord(record) ? "未換算" : formatVolume(record.volumeKg)}
                       </p>
                     </div>
                     <p className="mt-3 text-sm font-bold text-muted">

@@ -670,6 +670,93 @@ try {
     await assert.rejects(() => db.query("insert into public.food_inventory (user_id, kind, balance) values ($1, 'steak', -1)", [C]), (error) => error.code === "23514");
   });
 
+  // ---- Unconverted cardio (migration 0008). Mirrors lib/domain/workout-load.test.ts.
+  const runningD = await exerciseOf(D, "default-running");
+  const walkingD = await exerciseOf(D, "default-walking");
+  await check("cardio is recorded by time only: no volume, no points, weight ignored", async () => {
+    const before = await pointsOf(D);
+    const saved = (await asUser(D, () => one(saveFullSql, [runningD, "2026-02-04", 80, "kg", 30, 3, request(600), null, 0]), { commit: true })).result;
+    assert.equal(saved.created, true);
+    assert.equal(Number(saved.volumeKg), 0);
+    assert.equal(Number(saved.loadPerUnitKg), 0);
+    assert.equal(saved.growthPoints, 0);
+    assert.equal(await pointsOf(D), before);
+    const log = await asUser(D, () => one("select * from public.workout_logs where client_request_id = $1", [request(600)]));
+    assert.equal(Number(log.weight_kg), 0);
+    assert.equal(Number(log.assist_kg), 0);
+    assert.equal(log.reps, 30);
+    assert.equal(Number(log.volume_kg), 0);
+    const ledger = await asUser(D, () => one("select event_type, growth_points_delta from public.reward_ledger where workout_log_id = $1", [log.id]));
+    assert.deepEqual([ledger.event_type, ledger.growth_points_delta], ["workout_reward", 0]);
+  });
+  await check("replaying a cardio save is idempotent", async () => {
+    const before = await pointsOf(D);
+    const replay = (await asUser(D, () => one(saveFullSql, [runningD, "2026-02-04", 80, "kg", 30, 3, request(600), null, 0]))).result;
+    assert.equal(replay.created, false);
+    assert.equal(Number(replay.volumeKg), 0);
+    assert.equal(await pointsOf(D), before);
+    await denied(D, saveFullSql, [runningD, "2026-02-04", 80, "kg", 31, 3, request(600), null, 0], "22023");
+  });
+  await check("walking and a user-added cardio exercise are unconverted too", async () => {
+    const walk = (await asUser(D, () => one(saveFullSql, [walkingD, "2026-02-04", 0, "kg", 45, 1, request(601), null, 0]), { commit: true })).result;
+    assert.equal(Number(walk.volumeKg), 0);
+    const custom = (await asUser(D, () => one("select public.add_exercise('Swimming', 'cardio') as result"), { commit: true })).result;
+    const swim = (await asUser(D, () => one(saveFullSql, [custom.id, "2026-02-04", 0, "kg", 20, 1, request(602), null, 0]), { commit: true })).result;
+    assert.equal(Number(swim.volumeKg), 0);
+    assert.equal(swim.growthPoints, 0);
+  });
+  await check("cardio needs no body weight, and a typed one is still stored", async () => {
+    const walkingC = await exerciseOf(C, "default-walking");
+    const withoutWeight = (await asUser(C, () => one(saveFullSql, [walkingC, "2026-02-04", 0, "kg", 20, 1, request(603), null, 0]), { commit: true })).result;
+    assert.equal(withoutWeight.created, true);
+    assert.equal(withoutWeight.bodyWeightKg, null);
+    const typed = (await asUser(D, () => one(saveFullSql, [runningD, "2026-02-05", 0, "kg", 20, 1, request(604), 71, 0]), { commit: true })).result;
+    assert.equal(Number(typed.bodyWeightKg), 71);
+    const logged = await asUser(D, () => one("select weight_kg from public.body_weight_logs where log_date = '2026-02-05'"));
+    assert.equal(Number(logged.weight_kg), 71);
+  });
+  await check("cardio time is limited to 600 minutes and still validated", async () => {
+    const longest = (await asUser(D, () => one(saveFullSql, [runningD, "2026-02-06", 0, "kg", 600, 1, request(605), null, 0]), { commit: true })).result;
+    assert.equal(Number(longest.volumeKg), 0);
+    await denied(D, saveFullSql, [runningD, "2026-02-06", 0, "kg", 601, 1, request(606), null, 0], "22023");
+    await denied(D, saveFullSql, [runningD, "2026-02-06", 0, "kg", 0, 1, request(607), null, 0], "22023");
+    await denied(D, saveFullSql, [runningD, "2999-01-01", 0, "kg", 30, 1, request(608), null, 0], "22023");
+    await denied(D, saveFullSql, [runningD, "2026-02-06", -1, "kg", 30, 1, request(609), null, 0], "22023");
+  });
+  await check("cardio records can be edited and deleted without touching points", async () => {
+    const saved = (await asUser(D, () => one(saveFullSql, [runningD, "2026-02-07", 0, "kg", 30, 1, request(610), null, 0]), { commit: true })).result;
+    const before = await pointsOf(D);
+    const edited = await edit(D, saved.id, ["2026-02-07", 60, "kg", 45, 4], 70, { commit: true });
+    assert.equal(Number(edited.volumeKg), 0);
+    assert.equal(edited.growthPointsDelta, 0);
+    const log = await asUser(D, () => one("select weight_kg, reps, volume_kg from public.workout_logs where id = $1", [saved.id]));
+    assert.deepEqual([Number(log.weight_kg), log.reps, Number(log.volume_kg)], [0, 45, 0]);
+    await assert.rejects(() => edit(D, saved.id, ["2026-02-07", 0, "kg", 601, 1], 71), (error) => error.code === "22023");
+    const removed = await asUser(D, async () => (await one(deleteSql, [saved.id, request(611)])).result, { commit: true });
+    assert.equal(removed.growthPointsDelta, 0);
+    assert.equal(await pointsOf(D), before);
+  });
+  await check("editing a cardio record saved before the migration takes its old points back", async () => {
+    const legacy = await one("insert into public.workout_logs (user_id, exercise_id, client_request_id, workout_date, weight_kg, assist_kg, body_weight_kg, load_per_unit_kg, reps, sets, memo) values ($1, $2, $3, '2026-02-08', 5, 0, null, 5, 30, 3, '') returning id, volume_kg", [D, runningD, request(612)]);
+    assert.equal(Number(legacy.volume_kg), 450);
+    await db.query("insert into public.reward_ledger (user_id, workout_log_id, event_type, growth_points_delta, food_delta, request_id) values ($1, $2, 'workout_reward', 4, 0, $3)", [D, legacy.id, request(612)]);
+    await db.query("update public.maso_status set growth_points = growth_points + 4 where user_id = $1", [D]);
+    const before = await pointsOf(D);
+    const converted = await edit(D, legacy.id, ["2026-02-08", 5, "kg", 30, 3], 72, { commit: true });
+    assert.equal(Number(converted.volumeKg), 0);
+    assert.equal(converted.growthPointsDelta, -4);
+    assert.equal(converted.growthPoints, 0);
+    assert.equal(await pointsOf(D), before - 4);
+  });
+  await check("weight-based exercises are unaffected by the cardio rule", async () => {
+    const bench = await exerciseOf(D, "default-bench-press");
+    await denied(D, saveFullSql, [bench, "2026-02-09", 0, "kg", 10, 3, request(613), null, 0], "22023");
+    const saved = (await asUser(D, () => one(saveFullSql, [bench, "2026-02-09", 50, "kg", 10, 3, request(614), null, 0]), { commit: true })).result;
+    assert.equal(Number(saved.volumeKg), 1500);
+    const pushUpC = await exerciseOf(C, "default-push-up");
+    await denied(C, saveFullSql, [pushUpC, "2026-02-09", 0, "kg", 10, 3, request(615), null, 0], "22023");
+  });
+
   const beforeA = await snapshot(A);
   const beforeB = await snapshot(B);
 

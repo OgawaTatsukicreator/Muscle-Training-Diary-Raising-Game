@@ -1,6 +1,7 @@
 import {
   calculateLoadPerUnitKg,
   calculateVolumeFromLoad,
+  isUnconvertedBodyPart,
   ISOMETRIC_SECONDS_PER_REP,
   MAX_VOLUME_KG,
   patternUsesBodyWeight,
@@ -31,6 +32,10 @@ export type WorkoutCalculation = {
   bodyWeightKg: number | null;
   loadPerUnitKg: number;
   volumeKg: number;
+  /** 保存する回数(未換算の種目では時間[分]) */
+  reps: number;
+  /** 保存するセット数。未換算の種目は常に1 */
+  sets: number;
 };
 
 export type WorkoutEvaluation =
@@ -39,8 +44,18 @@ export type WorkoutEvaluation =
 
 type ExerciseLoadSpec = Pick<
   Exercise,
-  "calculationPattern" | "bwRatio" | "isIsometric"
+  "bodyPart" | "calculationPattern" | "bwRatio" | "isIsometric"
 >;
+
+/**
+ * 有酸素など、ボリュームに換算しない記録か。新しい記録は負荷が0で保存される。
+ * 旧バージョンで重量つきで保存された有酸素の記録は、保存済みのボリュームを保つ。
+ */
+export function isUnconvertedRecord(
+  record: Pick<WorkoutRecord, "bodyPart" | "loadPerUnitKg">,
+): boolean {
+  return isUnconvertedBodyPart(record.bodyPart) && record.loadPerUnitKg === 0;
+}
 
 /**
  * 入力済みの下書きを種目の換算パターンで評価する。DBの save_workout と
@@ -53,6 +68,22 @@ export function evaluateWorkoutDraft(
   exercise: ExerciseLoadSpec,
   fallbackBodyWeightKg: number | null,
 ): WorkoutEvaluation {
+  // 未換算の種目(有酸素)は時間だけを記録する。重量・セット数・アシストは使わない
+  if (isUnconvertedBodyPart(exercise.bodyPart)) {
+    return {
+      ok: true,
+      value: {
+        weightKg: 0,
+        assistKg: 0,
+        bodyWeightKg: draft.bodyWeightKg,
+        loadPerUnitKg: 0,
+        volumeKg: 0,
+        reps: draft.reps,
+        sets: 1,
+      },
+    };
+  }
+
   const fieldErrors: DraftFieldErrors = {};
   const pattern = exercise.calculationPattern;
   const weightKg = toKilograms(draft.weight, draft.unit);
@@ -118,7 +149,15 @@ export function evaluateWorkoutDraft(
 
   return {
     ok: true,
-    value: { weightKg, assistKg, bodyWeightKg, loadPerUnitKg, volumeKg },
+    value: {
+      weightKg,
+      assistKg,
+      bodyWeightKg,
+      loadPerUnitKg,
+      volumeKg,
+      reps: draft.reps,
+      sets: draft.sets,
+    },
   };
 }
 
@@ -129,11 +168,15 @@ export function evaluateWorkoutDraft(
 export function describeRecordLoad(
   record: Pick<
     WorkoutRecord,
-    "weightKg" | "reps" | "sets" | "loadPerUnitKg" | "assistKg"
+    "bodyPart" | "weightKg" | "reps" | "sets" | "loadPerUnitKg" | "assistKg"
   >,
   exercise: Pick<Exercise, "calculationPattern" | "isIsometric"> | undefined,
   unit: WeightUnit,
 ): string {
+  if (isUnconvertedRecord(record)) {
+    return `${record.reps}分 · 未換算`;
+  }
+
   const repsText = `${record.reps}${exercise?.isIsometric ? "秒" : "回"}`;
   const volumeText = `${repsText} × ${record.sets}セット`;
 

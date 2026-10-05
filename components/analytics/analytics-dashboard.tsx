@@ -8,6 +8,7 @@ import { PageHeading } from "@/components/common/page-heading";
 import { StorageNotice } from "@/components/common/storage-notice";
 import { useAppData } from "@/components/providers/app-data-provider";
 import { parseDateKey } from "@/lib/domain/date";
+import { isUnconvertedRecord } from "@/lib/domain/workout-load";
 import {
   BODY_PART_LABELS,
   BODY_PARTS,
@@ -59,6 +60,13 @@ export function AnalyticsDashboard({ today }: { today: string }) {
     ...bodyPartData.map((item) => item.volume),
     1,
   );
+  const unconvertedSummary = useMemo(() => {
+    const unconverted = records.filter(isUnconvertedRecord);
+    return {
+      count: unconverted.length,
+      minutes: unconverted.reduce((sum, record) => sum + record.reps, 0),
+    };
+  }, [records]);
   const exerciseData = useMemo(() => {
     const totals = new Map<string, { name: string; volume: number }>();
 
@@ -75,6 +83,7 @@ export function AnalyticsDashboard({ today }: { today: string }) {
 
     return [...totals.entries()]
       .map(([id, item]) => ({ id, ...item }))
+      .filter((item) => item.volume > 0)
       .sort((a, b) => b.volume - a.volume)
       .slice(0, 5);
   }, [records]);
@@ -169,6 +178,11 @@ export function AnalyticsDashboard({ today }: { today: string }) {
                 </div>
                 <TrendingUp aria-hidden="true" className="text-accent" size={22} />
               </div>
+              {bodyPartData.length === 0 ? (
+                <p className="mt-6 text-sm leading-6 text-muted">
+                  ボリュームに換算された記録がまだありません。
+                </p>
+              ) : null}
               <ul className="mt-6 space-y-4">
                 {bodyPartData.map((item) => (
                   <li key={item.bodyPart}>
@@ -192,6 +206,11 @@ export function AnalyticsDashboard({ today }: { today: string }) {
             <section className="surface-panel rounded-xl p-5 sm:p-6">
               <p className="text-xs font-bold text-muted">全期間</p>
               <h2 className="mt-1 text-lg font-semibold">種目別ボリューム</h2>
+              {exerciseData.length === 0 ? (
+                <p className="mt-5 text-sm leading-6 text-muted">
+                  ボリュームに換算された記録がまだありません。
+                </p>
+              ) : null}
               <ol className="mt-5 divide-y divide-line">
                 {exerciseData.map((item, index) => (
                   <li key={item.id} className="flex items-center gap-4 py-4">
@@ -206,6 +225,12 @@ export function AnalyticsDashboard({ today }: { today: string }) {
                 ))}
               </ol>
             </section>
+            {unconvertedSummary.count > 0 ? (
+              <p className="px-1 text-xs leading-5 font-bold text-muted">
+                有酸素 {unconvertedSummary.count.toLocaleString("ja-JP")}件・合計{" "}
+                {unconvertedSummary.minutes.toLocaleString("ja-JP")}分は、未換算のためボリュームの集計に含まれません。
+              </p>
+            ) : null}
           </div>
         )}
       </div>

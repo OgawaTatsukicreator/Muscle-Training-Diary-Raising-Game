@@ -6,7 +6,11 @@ import {
   latestBodyWeightKg,
   upsertBodyWeight,
 } from "@/lib/domain/body-weight";
-import { evaluateWorkoutDraft } from "@/lib/domain/workout-load";
+import {
+  describeRecordLoad,
+  evaluateWorkoutDraft,
+  isUnconvertedRecord,
+} from "@/lib/domain/workout-load";
 import { workoutDraftSchema, type WorkoutDraft } from "@/lib/domain/workout";
 
 function exercise(key: string) {
@@ -129,6 +133,82 @@ describe("evaluateWorkoutDraft", () => {
       null,
     );
     expect(!result.ok && result.fieldErrors.volume).toBeDefined();
+  });
+});
+
+describe("unconverted exercises (cardio)", () => {
+  // Executed against PostgreSQL in supabase/tests/account-isolation.mjs.
+  it("records time only: no load, no volume, weight ignored, one set", () => {
+    const result = evaluateWorkoutDraft(
+      draft({ bodyPart: "cardio", weight: 80, assist: 30, reps: 45, sets: 4 }),
+      exercise("default-running"),
+      null,
+    );
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        weightKg: 0,
+        assistKg: 0,
+        bodyWeightKg: null,
+        loadPerUnitKg: 0,
+        volumeKg: 0,
+        reps: 45,
+        sets: 1,
+      },
+    });
+  });
+
+  it("needs neither a weight nor a body weight, but keeps a typed body weight", () => {
+    const plain = evaluateWorkoutDraft(draft({ weight: 0 }), exercise("default-walking"), null);
+    expect(plain.ok).toBe(true);
+
+    const typed = evaluateWorkoutDraft(
+      draft({ weight: 0, bodyWeightKg: 68.5 }),
+      exercise("default-walking"),
+      null,
+    );
+    expect(typed.ok && typed.value.bodyWeightKg).toBe(68.5);
+  });
+
+  it("is decided by the exercise's body part, not by its pattern", () => {
+    const result = evaluateWorkoutDraft(
+      draft({ weight: 0 }),
+      { bodyPart: "cardio", calculationPattern: "B", bwRatio: 0.88, isIsometric: false },
+      null,
+    );
+    expect(result.ok && result.value.volumeKg).toBe(0);
+  });
+
+  it("does not change how other exercises are evaluated", () => {
+    const result = evaluateWorkoutDraft(draft({ weight: 0 }), exercise("default-bench-press"), null);
+    expect(result.ok).toBe(false);
+  });
+
+  it("recognises saved cardio records and describes them by time", () => {
+    const record = {
+      bodyPart: "cardio" as const,
+      weightKg: 0,
+      assistKg: 0,
+      reps: 30,
+      sets: 1,
+      loadPerUnitKg: 0,
+    };
+    expect(isUnconvertedRecord(record)).toBe(true);
+    expect(describeRecordLoad(record, exercise("default-running"), "kg")).toBe("30分 · 未換算");
+  });
+
+  it("keeps cardio records saved with a weight before this rule as ordinary records", () => {
+    const legacy = {
+      bodyPart: "cardio" as const,
+      weightKg: 5,
+      assistKg: 0,
+      reps: 30,
+      sets: 3,
+      loadPerUnitKg: 5,
+    };
+    expect(isUnconvertedRecord(legacy)).toBe(false);
+    expect(describeRecordLoad(legacy, exercise("default-running"), "kg")).toBe("5 kg × 30回 × 3セット");
+    expect(isUnconvertedRecord({ ...legacy, bodyPart: "chest", loadPerUnitKg: 0 })).toBe(false);
   });
 });
 

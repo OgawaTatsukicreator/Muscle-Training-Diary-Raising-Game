@@ -292,7 +292,7 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         };
       }
 
-      const { weightKg, assistKg, bodyWeightKg, loadPerUnitKg, volumeKg } =
+      const { weightKg, assistKg, bodyWeightKg, loadPerUnitKg, volumeKg, reps, sets } =
         evaluation.value;
       const record: WorkoutRecord = {
         id: crypto.randomUUID(),
@@ -302,8 +302,8 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         exerciseName: exercise.name,
         bodyPart: exercise.bodyPart,
         weightKg,
-        reps: parsed.data.reps,
-        sets: parsed.data.sets,
+        reps,
+        sets,
         volumeKg,
         bodyWeightKg,
         assistKg,
@@ -419,7 +419,7 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         };
       }
 
-      const { weightKg, assistKg, bodyWeightKg, loadPerUnitKg, volumeKg } =
+      const { weightKg, assistKg, bodyWeightKg, loadPerUnitKg, volumeKg, reps, sets } =
         evaluation.value;
       const adjustment = workoutRewardAdjustment({
         granted: current.rewardPoints ?? rewardsFromVolume(current.volumeKg).growthPoints,
@@ -439,8 +439,8 @@ export function DemoDataProvider({ children }: { children: ReactNode }) {
         ...current,
         workoutDate: parsed.data.workoutDate,
         weightKg,
-        reps: parsed.data.reps,
-        sets: parsed.data.sets,
+        reps,
+        sets,
         volumeKg,
         bodyWeightKg,
         assistKg,

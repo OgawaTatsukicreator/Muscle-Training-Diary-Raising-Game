@@ -24,10 +24,12 @@ import {
   isDateKey,
 } from "@/lib/domain/date";
 import {
-  CALCULATION_PATTERN_LABELS,
+  conversionLabel,
   customExerciseQuestion,
+  isUnconvertedBodyPart,
   ISOMETRIC_SECONDS_PER_REP,
   MAX_ISOMETRIC_SECONDS,
+  MAX_UNCONVERTED_MINUTES,
   patternUsesBodyWeight,
 } from "@/lib/domain/load";
 import {
@@ -70,6 +72,15 @@ const PATTERN_EXPLANATIONS = {
   C: "(体重 × 係数 + 追加重量) × 回数 × セット数で計算します",
   D: "(体重 × 係数 + 追加重量 − アシスト) × 回数 × セット数で計算します",
 } as const;
+
+/** 種目を選んだときの回数欄の初期値(未換算は分、静的種目は秒) */
+function defaultReps(exercise: Exercise | undefined): string {
+  if (exercise && isUnconvertedBodyPart(exercise.bodyPart)) {
+    return "30";
+  }
+
+  return exercise?.isIsometric ? "60" : "10";
+}
 
 /**
  * 記録の入力フォーム。editing を渡すと、保存済みの記録を編集するモードになる。
@@ -145,6 +156,10 @@ export function WorkoutEntryForm({
   const pattern = selectedExercise?.calculationPattern ?? "A";
   const usesBodyWeight = patternUsesBodyWeight(pattern);
   const isometric = selectedExercise?.isIsometric ?? false;
+  // 有酸素など未換算の種目は、時間(分)だけを入力する
+  const unconverted = selectedExercise
+    ? isUnconvertedBodyPart(selectedExercise.bodyPart)
+    : false;
   const bodyUnit = settings.weightUnit;
   const recordedBodyWeight = bodyWeights.find((entry) => entry.date === workoutDate);
   const lastBodyWeightKg = latestBodyWeightKg(bodyWeights, workoutDate);
@@ -160,11 +175,11 @@ export function WorkoutEntryForm({
     workoutDate,
     exerciseId,
     bodyPart,
-    weight: weight.trim() === "" ? Number.NaN : Number(weight),
+    weight: unconverted ? 0 : weight.trim() === "" ? Number.NaN : Number(weight),
     unit,
     reps: Number(reps),
-    sets: Number(sets),
-    assist: assist.trim() === "" ? 0 : Number(assist),
+    sets: unconverted ? 1 : Number(sets),
+    assist: unconverted || assist.trim() === "" ? 0 : Number(assist),
     bodyWeightKg: typedBodyWeightKg,
     memo,
   };
@@ -226,8 +241,9 @@ export function WorkoutEntryForm({
     if (patternUsesBodyWeight(nextExercise.calculationPattern) !== usesBodyWeight) {
       setWeight(usesBodyWeight ? "50" : "0");
     }
-    if (nextExercise.isIsometric !== isometric) {
-      setReps(nextExercise.isIsometric ? "60" : "10");
+    const nextReps = defaultReps(nextExercise);
+    if (nextReps !== defaultReps(selectedExercise)) {
+      setReps(nextReps);
     }
 
     setExerciseId(nextExercise.id);
@@ -602,11 +618,13 @@ export function WorkoutEntryForm({
                       </label>
                     ) : null}
                     <p className="mt-3 text-[11px] leading-5 text-muted">
-                      {bodyPart === "abs"
-                        ? "腹の種目は自重で計算します。"
-                        : bodyPart === "legs"
-                          ? "脚の種目は、自重を使うか選べます。"
-                          : "ウエイトの重量で計算します。"}
+                      {isUnconvertedBodyPart(bodyPart)
+                        ? "有酸素は未換算です。時間（分）だけを記録します。"
+                        : bodyPart === "abs"
+                          ? "腹の種目は自重で計算します。"
+                          : bodyPart === "legs"
+                            ? "脚の種目は、自重を使うか選べます。"
+                            : "ウエイトの重量で計算します。"}
                     </p>
                     {newExerciseError ? (
                       <p
@@ -646,7 +664,7 @@ export function WorkoutEntryForm({
                       >
                         <span>
                           <span className="block text-[10px] font-bold text-muted">
-                            {BODY_PART_LABELS[exercise.bodyPart]} · {CALCULATION_PATTERN_LABELS[exercise.calculationPattern]}
+                            {BODY_PART_LABELS[exercise.bodyPart]} · {conversionLabel(exercise)}
                           </span>
                           <span className="mt-1 block font-semibold">{exercise.name}</span>
                         </span>
@@ -715,7 +733,11 @@ export function WorkoutEntryForm({
                     Step 2
                   </p>
                   <h2 id="details-step-title" className="mt-1 text-lg font-semibold">
-                    {isometric ? "重量・秒数・セット数" : "重量・回数・セット数"}
+                    {unconverted
+                      ? "時間"
+                      : isometric
+                        ? "重量・秒数・セット数"
+                        : "重量・回数・セット数"}
                   </h2>
                 </div>
 
@@ -790,53 +812,57 @@ export function WorkoutEntryForm({
                   </div>
                 ) : null}
 
-                <div className="mt-4 grid gap-4 sm:grid-cols-3">
-                  <div>
-                    <label htmlFor="workout-weight" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
-                      <Scale aria-hidden="true" size={15} />
-                      {usesBodyWeight ? "追加重量（なしなら0）" : "重量"}
-                    </label>
-                    <div className="flex min-h-14 overflow-hidden rounded-xl border border-line bg-white focus-within:border-ink">
-                      <input
-                        id="workout-weight"
-                        type="number"
-                        inputMode="decimal"
-                        min={usesBodyWeight ? "0" : "0.1"}
-                        max={maxWeight}
-                        step="0.1"
-                        value={weight}
-                        onChange={(event) => setWeight(event.target.value)}
-                        className="data-number min-w-0 flex-1 bg-transparent px-3 text-xl font-bold outline-none"
-                        aria-invalid={Boolean(fieldErrors.weight)}
-                        aria-describedby={fieldErrors.weight ? "weight-error" : undefined}
-                      />
-                      <div className="flex border-l border-line bg-canvas/60 p-1" role="group" aria-label="重量単位">
-                        {(["kg", "lb"] as const).map((item) => (
-                          <button
-                            key={item}
-                            type="button"
-                            aria-pressed={unit === item}
-                            onClick={() => setUnitOverride(item)}
-                            className={`min-w-10 rounded-lg px-2 text-xs font-bold ${
-                              unit === item ? "bg-accent text-white" : "text-muted"
-                            }`}
-                          >
-                            {item}
-                          </button>
-                        ))}
+                <div
+                  className={`mt-4 grid gap-4 ${unconverted ? "" : "sm:grid-cols-3"}`}
+                >
+                  {unconverted ? null : (
+                    <div>
+                      <label htmlFor="workout-weight" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
+                        <Scale aria-hidden="true" size={15} />
+                        {usesBodyWeight ? "追加重量（なしなら0）" : "重量"}
+                      </label>
+                      <div className="flex min-h-14 overflow-hidden rounded-xl border border-line bg-white focus-within:border-ink">
+                        <input
+                          id="workout-weight"
+                          type="number"
+                          inputMode="decimal"
+                          min={usesBodyWeight ? "0" : "0.1"}
+                          max={maxWeight}
+                          step="0.1"
+                          value={weight}
+                          onChange={(event) => setWeight(event.target.value)}
+                          className="data-number min-w-0 flex-1 bg-transparent px-3 text-xl font-bold outline-none"
+                          aria-invalid={Boolean(fieldErrors.weight)}
+                          aria-describedby={fieldErrors.weight ? "weight-error" : undefined}
+                        />
+                        <div className="flex border-l border-line bg-canvas/60 p-1" role="group" aria-label="重量単位">
+                          {(["kg", "lb"] as const).map((item) => (
+                            <button
+                              key={item}
+                              type="button"
+                              aria-pressed={unit === item}
+                              onClick={() => setUnitOverride(item)}
+                              className={`min-w-10 rounded-lg px-2 text-xs font-bold ${
+                                unit === item ? "bg-accent text-white" : "text-muted"
+                              }`}
+                            >
+                              {item}
+                            </button>
+                          ))}
+                        </div>
                       </div>
+                      {fieldErrors.weight ? (
+                        <p id="weight-error" className="mt-2 text-xs font-bold text-accent-strong">
+                          {fieldErrors.weight}
+                        </p>
+                      ) : null}
                     </div>
-                    {fieldErrors.weight ? (
-                      <p id="weight-error" className="mt-2 text-xs font-bold text-accent-strong">
-                        {fieldErrors.weight}
-                      </p>
-                    ) : null}
-                  </div>
+                  )}
 
                   <div>
                     <label htmlFor="workout-reps" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
                       <Repeat2 aria-hidden="true" size={15} />
-                      {isometric ? "秒数" : "回数"}
+                      {unconverted ? "時間" : isometric ? "秒数" : "回数"}
                     </label>
                     <div className="flex min-h-14 items-center rounded-xl border border-line bg-white">
                       <input
@@ -844,7 +870,13 @@ export function WorkoutEntryForm({
                         type="number"
                         inputMode="numeric"
                         min="1"
-                        max={isometric ? MAX_ISOMETRIC_SECONDS : MAX_REPS}
+                        max={
+                          unconverted
+                            ? MAX_UNCONVERTED_MINUTES
+                            : isometric
+                              ? MAX_ISOMETRIC_SECONDS
+                              : MAX_REPS
+                        }
                         step="1"
                         value={reps}
                         onChange={(event) => setReps(event.target.value)}
@@ -852,7 +884,7 @@ export function WorkoutEntryForm({
                         aria-invalid={Boolean(fieldErrors.reps)}
                         aria-describedby={fieldErrors.reps ? "reps-error" : undefined}
                       />
-                      <span className="pr-4 text-xs font-bold text-muted">{isometric ? "秒" : "回"}</span>
+                      <span className="pr-4 text-xs font-bold text-muted">{unconverted ? "分" : isometric ? "秒" : "回"}</span>
                     </div>
                     {fieldErrors.reps ? (
                       <p id="reps-error" className="mt-2 text-xs font-bold text-accent-strong">
@@ -861,33 +893,35 @@ export function WorkoutEntryForm({
                     ) : null}
                   </div>
 
-                  <div>
-                    <label htmlFor="workout-sets" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
-                      <Layers3 aria-hidden="true" size={15} />
-                      セット数
-                    </label>
-                    <div className="flex min-h-14 items-center rounded-xl border border-line bg-white">
-                      <input
-                        id="workout-sets"
-                        type="number"
-                        inputMode="numeric"
-                        min="1"
-                        max={MAX_SETS}
-                        step="1"
-                        value={sets}
-                        onChange={(event) => setSetsOverride(event.target.value)}
-                        className="data-number min-w-0 flex-1 bg-transparent px-4 text-xl font-bold outline-none"
-                        aria-invalid={Boolean(fieldErrors.sets)}
-                        aria-describedby={fieldErrors.sets ? "sets-error" : undefined}
-                      />
-                      <span className="pr-4 text-xs font-bold text-muted">set</span>
+                  {unconverted ? null : (
+                    <div>
+                      <label htmlFor="workout-sets" className="mb-2 flex items-center gap-2 text-xs font-bold text-muted">
+                        <Layers3 aria-hidden="true" size={15} />
+                        セット数
+                      </label>
+                      <div className="flex min-h-14 items-center rounded-xl border border-line bg-white">
+                        <input
+                          id="workout-sets"
+                          type="number"
+                          inputMode="numeric"
+                          min="1"
+                          max={MAX_SETS}
+                          step="1"
+                          value={sets}
+                          onChange={(event) => setSetsOverride(event.target.value)}
+                          className="data-number min-w-0 flex-1 bg-transparent px-4 text-xl font-bold outline-none"
+                          aria-invalid={Boolean(fieldErrors.sets)}
+                          aria-describedby={fieldErrors.sets ? "sets-error" : undefined}
+                        />
+                        <span className="pr-4 text-xs font-bold text-muted">set</span>
+                      </div>
+                      {fieldErrors.sets ? (
+                        <p id="sets-error" className="mt-2 text-xs font-bold text-accent-strong">
+                          {fieldErrors.sets}
+                        </p>
+                      ) : null}
                     </div>
-                    {fieldErrors.sets ? (
-                      <p id="sets-error" className="mt-2 text-xs font-bold text-accent-strong">
-                        {fieldErrors.sets}
-                      </p>
-                    ) : null}
-                  </div>
+                  )}
                 </div>
 
                 {pattern === "D" ? (
@@ -949,16 +983,20 @@ export function WorkoutEntryForm({
               <section className="overflow-hidden rounded-xl border border-accent/30 bg-accent-soft">
                 <div className="flex items-center justify-between gap-4 px-5 py-5">
                   <div>
-                    <p className="text-xs font-bold text-muted">トータルボリューム</p>
+                    <p className="text-xs font-bold text-muted">
+                      {unconverted ? "換算" : "トータルボリューム"}
+                    </p>
                     <p className="data-number mt-1 text-[clamp(2rem,10vw,3rem)] leading-none font-bold">
-                      {formatVolume(volume)}
+                      {unconverted ? "未換算" : formatVolume(volume)}
                     </p>
                   </div>
                   <Dumbbell aria-hidden="true" className="shrink-0 text-muted" size={32} />
                 </div>
                 <p className="border-t border-ink/15 px-5 py-3 text-xs font-bold text-muted">
-                  {PATTERN_EXPLANATIONS[pattern]}
-                  {loadPerRepKg !== null && usesBodyWeight
+                  {unconverted
+                    ? "有酸素は時間だけを記録します。ボリュームと育成ポイントには加わりません"
+                    : PATTERN_EXPLANATIONS[pattern]}
+                  {!unconverted && loadPerRepKg !== null && usesBodyWeight
                     ? `（${isometric ? "10秒" : "1回"}あたり ${formatVolume(loadPerRepKg)}）`
                     : ""}
                 </p>
