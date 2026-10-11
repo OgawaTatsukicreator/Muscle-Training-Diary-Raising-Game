@@ -3,18 +3,17 @@
 import {
   Beef,
   ChevronLeft,
-  LogIn,
   Menu,
   PencilLine,
   RotateCcw,
   X,
 } from "lucide-react";
 import Image from "next/image";
-import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { BgmSettings } from "@/components/audio/bgm-settings";
 import { StorageNotice } from "@/components/common/storage-notice";
+import { AccountAccessControls } from "@/components/common/account-access-controls";
 import { ItemQuantitySelector } from "@/components/home/item-quantity-selector";
 import { useAppData } from "@/components/providers/app-data-provider";
 import { formatJapaneseDate } from "@/lib/domain/date";
@@ -488,6 +487,7 @@ export function HomeDashboard({ today }: { today: string }) {
                 alt={`レベル${maso.level}の${maso.name}・体フェーズ${masoPhase}`}
                 width={320}
                 height={480}
+                sizes="(min-width: 536px) 310px, calc((100vw - 36px) * 0.62)"
                 preload
               />
               <span className="maso-eye maso-eye--left" aria-hidden="true" />
@@ -846,13 +846,7 @@ export function HomeDashboard({ today }: { today: string }) {
 
                 <BgmSettings />
 
-                <Link
-                  href="/login"
-                  className="mt-4 flex min-h-11 items-center gap-3 border-t border-ink/15 pt-3 text-sm font-bold"
-                >
-                  <LogIn aria-hidden="true" size={17} />
-                  {storageMode === "supabase" ? "アカウント" : "ログイン設定"}
-                </Link>
+                <AccountAccessControls />
 
                 {storageMode === "local" && isConfirmingClear ? (
                   <div className="mt-2 border-t border-ink/15 pt-3">
@@ -888,7 +882,7 @@ export function HomeDashboard({ today }: { today: string }) {
                     className="mt-2 flex min-h-11 w-full items-center gap-3 border-t border-ink/15 pt-3 text-left text-xs font-bold text-muted"
                   >
                     <RotateCcw aria-hidden="true" size={16} />
-                    プレビューデータを消去
+                    ゲストのデータを消去
                   </button>
                 ) : null}
                 {message ? (

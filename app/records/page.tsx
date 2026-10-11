@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import { RecordsDashboard } from "@/components/records/records-dashboard";
 import { dateKeyInTimeZone, isDateKey } from "@/lib/domain/date";
+import { parseRecordPage } from "@/lib/domain/record-pagination";
 
 export const metadata: Metadata = {
   title: "記録",
@@ -14,6 +15,7 @@ export default async function RecordsPage({
     date?: string | string[];
     saved?: string | string[];
     updated?: string | string[];
+    page?: string | string[];
   }>;
 }) {
   const params = await searchParams;
@@ -26,6 +28,7 @@ export default async function RecordsPage({
     <RecordsDashboard
       initialDate={initialDate}
       initialView={initialView}
+      initialPage={parseRecordPage(params.page)}
       notice={
         params.saved === "1" ? "saved" : params.updated === "1" ? "updated" : null
       }

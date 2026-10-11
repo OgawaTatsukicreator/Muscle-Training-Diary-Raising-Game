@@ -11,7 +11,7 @@ import { WorkoutEntryForm } from "@/components/workout/workout-entry-form";
  * 保存済みの記録を編集する画面。記録の読み込みを待ち、見つからない場合
  * (削除済み・別アカウントの記録・不正なURL)は編集フォームを出さずに案内する。
  */
-export function WorkoutEditScreen({ workoutId }: { workoutId: string }) {
+export function WorkoutEditScreen({ workoutId, returnPage = 1 }: { workoutId: string; returnPage?: number }) {
   const { records, isReady } = useAppData();
   const record = records.find((item) => item.id === workoutId);
 
@@ -47,6 +47,6 @@ export function WorkoutEditScreen({ workoutId }: { workoutId: string }) {
   }
 
   return (
-    <WorkoutEntryForm key={record.id} initialDate={record.workoutDate} editing={record} />
+    <WorkoutEntryForm key={record.id} initialDate={record.workoutDate} editing={record} returnPage={returnPage} />
   );
 }

@@ -192,16 +192,89 @@ describe("updateSession", () => {
     { url: undefined, key: PUBLIC_KEY },
     { url: PUBLIC_URL, key: undefined },
     { url: undefined, key: undefined },
-  ])("preserves preview access when public Supabase configuration is incomplete: %j", async ({ url, key }) => {
+  ])("requires an explicit guest choice when public Supabase configuration is incomplete: %j", async ({ url, key }) => {
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", url);
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", key);
 
     const response = await updateSession(requestFor("/records"));
 
-    expect(response.status).toBe(200);
-    expect(response.headers.get("x-middleware-next")).toBe("1");
-    expect(response.headers.get("location")).toBeNull();
+    expect(response.status).toBe(307);
+    expect(new URL(response.headers.get("location")!).pathname).toBe("/welcome");
     expect(createServerClient).not.toHaveBeenCalled();
     expect(getClaims).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("admits an explicitly selected local guest with Supabase configured=%s", async (configured) => {
+    if (!configured) vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", undefined);
+    const response = await updateSession(requestFor("/records", "musclememo-guest=1"));
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+    expectNoStore(response);
+  });
+
+  it.each(["musclememo-guest=0", "musclememo-guest=true", "other-musclememo-guest=1"])("does not admit an invalid guest marker %s", async (cookie) => {
+    const response = await updateSession(requestFor("/analytics", cookie));
+    expect(new URL(response.headers.get("location")!).pathname).toBe("/welcome");
+  });
+
+  it.each(["/welcome", "/login", "/register"])("automatically reenters a verified account from %s", async (path) => {
+    getClaims.mockResolvedValue(signedIn);
+    const response = await updateSession(requestFor(`${path}?next=%2Frecords%3Fdate%3D2026-10-11`, "musclememo-guest=1"));
+    expect(response.headers.get("location")).toBe(`${APP_ORIGIN}/records?date=2026-10-11`);
+    expect(response.cookies.get("musclememo-guest")).toMatchObject({ value: "", path: "/", maxAge: 0 });
+    expectNoStore(response);
+  });
+
+  it("keeps automatic reentry on the application origin", async () => {
+    getClaims.mockResolvedValue(signedIn);
+    const response = await updateSession(requestFor("/login?next=https%3A%2F%2Fother.example%2F"));
+    expect(response.headers.get("location")).toBe(`${APP_ORIGIN}/`);
+  });
+
+  it("preserves refreshed auth cookies when redirecting an already signed-in account", async () => {
+    getClaims.mockImplementationOnce(async () => {
+      await cookieMethods.setAll?.([{ name: "sb-fake-project-auth-token", value: "refreshed", options: { path: "/", secure: true } }], NO_STORE_HEADERS);
+      return signedIn;
+    });
+    const response = await updateSession(requestFor("/register?next=%2Fanalytics"));
+    expect(response.headers.get("location")).toBe(`${APP_ORIGIN}/analytics`);
+    expect(response.cookies.get("sb-fake-project-auth-token")).toMatchObject({ value: "refreshed", path: "/", secure: true });
+    expectNoStore(response);
+  });
+
+  it("preserves both cookie batches if refresh writes more than once", async () => {
+    getClaims.mockImplementationOnce(async () => {
+      await cookieMethods.setAll?.([{ name: "sb-fake-project-auth-token.0", value: "part-0", options: { path: "/" } }], NO_STORE_HEADERS);
+      await cookieMethods.setAll?.([{ name: "sb-fake-project-auth-token.1", value: "part-1", options: { path: "/" } }], NO_STORE_HEADERS);
+      return signedIn;
+    });
+    const response = await updateSession(requestFor("/login"));
+    expect(response.cookies.get("sb-fake-project-auth-token.0")?.value).toBe("part-0");
+    expect(response.cookies.get("sb-fake-project-auth-token.1")?.value).toBe("part-1");
+    expectNoStore(response);
+  });
+
+  it("does not suppress unrelated static resource caching", async () => {
+    const response = await updateSession(requestFor("/audio/background.mp3"));
+    expect(response.headers.get("Cache-Control")).toBeNull();
+  });
+
+  it("does not admit a cloud account when claims verification throws", async () => {
+    getClaims.mockRejectedValue(new Error("Network unavailable"));
+    const response = await updateSession(requestFor("/records", "sb-fake-project-auth-token=token"));
+    expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
+    expectNoStore(response);
+  });
+
+  it("keeps first-time entry on the browser-facing host after Next normalizes localhost", async () => {
+    const response = await updateSession(new NextRequest("http://localhost:3181/", { headers: { host: "127.0.0.1:3181" } }));
+    expect(new URL(response.headers.get("location")!).origin).toBe("http://127.0.0.1:3181");
+  });
+
+  it("keeps an explicitly selected guest usable during an auth outage", async () => {
+    getClaims.mockRejectedValue(new Error("Network unavailable"));
+    const response = await updateSession(requestFor("/", "musclememo-guest=1"));
+    expect(response.headers.get("location")).toBeNull();
+    expectNoStore(response);
   });
 });

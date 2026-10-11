@@ -89,9 +89,11 @@ function defaultReps(exercise: Exercise | undefined): string {
 export function WorkoutEntryForm({
   initialDate,
   editing,
+  returnPage = 1,
 }: {
   initialDate: string;
   editing?: WorkoutRecord;
+  returnPage?: number;
 }) {
   const router = useRouter();
   const {
@@ -358,7 +360,7 @@ export function WorkoutEntryForm({
 
     pendingWorkoutRef.current = null;
     router.push(
-      `/records?date=${encodeURIComponent(workoutDate)}&${editing ? "updated" : "saved"}=1`,
+      `/records?date=${encodeURIComponent(workoutDate)}&${editing ? `updated=1&page=${returnPage}` : "saved=1"}`,
     );
   }
 
@@ -372,7 +374,7 @@ export function WorkoutEntryForm({
         <header className="grid grid-cols-[44px_1fr_44px] items-center gap-3 border-y border-line py-3">
           {editing || step === "exercise" ? (
             <Link
-              href={`/records?date=${encodeURIComponent(editing?.workoutDate ?? workoutDate)}`}
+              href={`/records?date=${encodeURIComponent(editing?.workoutDate ?? workoutDate)}${editing ? `&page=${returnPage}` : ""}`}
               aria-label="選択日の記録へ戻る"
               className="grid size-11 place-items-center rounded-full hover:bg-canvas"
             >

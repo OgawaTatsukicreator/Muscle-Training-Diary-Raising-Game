@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { safeNextPath } from "@/lib/auth/redirect";
+import { requestOrigin } from "@/lib/auth/request-origin";
+import { GUEST_COOKIE_NAME, guestCookieOptions } from "@/lib/auth/guest";
 import { createClient } from "@/lib/supabase/server";
 
 function noStoreRedirect(url: URL) {
@@ -17,23 +19,24 @@ function noStoreRedirect(url: URL) {
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get("code");
   const nextPath = safeNextPath(request.nextUrl.searchParams.get("next"));
-  const supabase = await createClient();
-
-  if (!code || !supabase) {
-    const loginUrl = new URL("/login", request.url);
-    loginUrl.searchParams.set("status", "callback-error");
-    loginUrl.searchParams.set("next", nextPath);
+  const visibleOrigin = requestOrigin(request);
+  const loginUrl = new URL("/login", visibleOrigin);
+  loginUrl.searchParams.set("status", "callback-error");
+  loginUrl.searchParams.set("next", nextPath);
+  if (!code) {
     return noStoreRedirect(loginUrl);
   }
 
-  const { error } = await supabase.auth.exchangeCodeForSession(code);
-
-  if (error) {
-    const loginUrl = new URL("/login", request.url);
-    loginUrl.searchParams.set("status", "callback-error");
-    loginUrl.searchParams.set("next", nextPath);
+  try {
+    const supabase = await createClient();
+    if (!supabase) return noStoreRedirect(loginUrl);
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error || !data.session) return noStoreRedirect(loginUrl);
+  } catch {
     return noStoreRedirect(loginUrl);
   }
 
-  return noStoreRedirect(new URL(nextPath, request.url));
+  const response = noStoreRedirect(new URL(nextPath, visibleOrigin));
+  response.cookies.set(GUEST_COOKIE_NAME, "", { ...guestCookieOptions(), maxAge: 0 });
+  return response;
 }

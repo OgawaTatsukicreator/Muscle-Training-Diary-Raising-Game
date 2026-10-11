@@ -31,16 +31,71 @@ import {
   type WeightUnit,
 } from "@/lib/domain/workout";
 import { describeRecordLoad, isUnconvertedRecord } from "@/lib/domain/workout-load";
+import { RECORDS_PER_PAGE } from "@/lib/domain/record-pagination";
 
 const WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];
+
+function RecordPagination({
+  page,
+  pageCount,
+  disabled,
+  position,
+  onPageChange,
+}: {
+  page: number;
+  pageCount: number;
+  disabled: boolean;
+  position: "上" | "下";
+  onPageChange: (page: number, moveFocus: boolean) => void;
+}) {
+  return (
+    <nav aria-label={`記録のページ（${position}）`} className="mt-4 flex items-center gap-2">
+      <button
+        type="button"
+        disabled={disabled || page <= 1}
+        onClick={() => onPageChange(page - 1, position === "下")}
+        className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg border border-line bg-white px-3 text-xs font-bold hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <ChevronLeft aria-hidden="true" size={16} />
+        前へ
+      </button>
+      <label className="min-w-0 flex-1">
+        <span className="sr-only">表示ページ（{position}）</span>
+        <select
+          value={page}
+          disabled={disabled}
+          onChange={(event) => onPageChange(Number(event.target.value), position === "下")}
+          className="min-h-11 w-full rounded-lg border border-line bg-white px-2 text-center text-xs font-bold disabled:cursor-wait disabled:opacity-40"
+        >
+          {Array.from({ length: pageCount }, (_, index) => (
+            <option key={index + 1} value={index + 1}>
+              {index + 1} / {pageCount} ページ
+            </option>
+          ))}
+        </select>
+      </label>
+      <button
+        type="button"
+        disabled={disabled || page >= pageCount}
+        onClick={() => onPageChange(page + 1, position === "下")}
+        className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg border border-line bg-white px-3 text-xs font-bold hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        次へ
+        <ChevronRight aria-hidden="true" size={16} />
+      </button>
+    </nav>
+  );
+}
 
 export function RecordsDashboard({
   initialDate,
   initialView,
+  initialPage = 1,
   notice,
 }: {
   initialDate: string;
   initialView: "calendar" | "day";
+  initialPage?: number;
   notice: "saved" | "updated" | null;
 }) {
   const router = useRouter();
@@ -66,6 +121,8 @@ export function RecordsDashboard({
   const initialDateObject = parseDateKey(initialDate);
   const [screen, setScreen] = useState<"calendar" | "day">(initialView);
   const [selectedDate, setSelectedDate] = useState(initialDate);
+  const [recordPage, setRecordPage] = useState({ date: initialDate, number: initialPage });
+  const recordsStartRef = useRef<HTMLParagraphElement>(null);
   const [view, setView] = useState({
     year: initialDateObject.getUTCFullYear(),
     monthIndex: initialDateObject.getUTCMonth(),
@@ -87,6 +144,15 @@ export function RecordsDashboard({
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [records, selectedDate],
   );
+  const recordPageCount = Math.max(1, Math.ceil(selectedRecords.length / RECORDS_PER_PAGE));
+  // Clamp after deleting the last item on the final page. Changing dates starts
+  // at the newest records without waiting for an effect to reset the page.
+  const currentRecordPage = Math.min(
+    recordPage.date === selectedDate ? recordPage.number : 1,
+    recordPageCount,
+  );
+  const recordPageStart = (currentRecordPage - 1) * RECORDS_PER_PAGE;
+  const visibleRecords = selectedRecords.slice(recordPageStart, recordPageStart + RECORDS_PER_PAGE);
   const selectedTotal = selectedRecords.reduce(
     (sum, record) => sum + record.volumeKg,
     0,
@@ -118,11 +184,28 @@ export function RecordsDashboard({
     }
 
     setSelectedDate(dateKey);
+    setRecordPage({ date: dateKey, number: 1 });
+    setConfirmingDeleteId(null);
     const date = parseDateKey(dateKey);
     setView({ year: date.getUTCFullYear(), monthIndex: date.getUTCMonth() });
     setScreen("day");
     router.replace(`/records?date=${encodeURIComponent(dateKey)}`, {
       scroll: false,
+    });
+  }
+
+  function changeRecordPage(page: number, moveFocus: boolean) {
+    if (deletingRef.current) return;
+    const nextPage = Math.min(recordPageCount, Math.max(1, page));
+    setRecordPage({ date: selectedDate, number: nextPage });
+    setConfirmingDeleteId(null);
+    router.replace(`/records?date=${encodeURIComponent(selectedDate)}&page=${nextPage}`, { scroll: false });
+    // Keep the top controls focused for repeated keyboard navigation. Bottom
+    // navigation returns to the new records instead of leaving them off-screen.
+    if (!moveFocus) return;
+    requestAnimationFrame(() => {
+      recordsStartRef.current?.focus({ preventScroll: true });
+      recordsStartRef.current?.scrollIntoView({ block: "start", behavior: "instant" });
     });
   }
 
@@ -148,6 +231,16 @@ export function RecordsDashboard({
 
       pendingDeleteIdsRef.current.delete(recordId);
       setConfirmingDeleteId(null);
+      const remainingCount = selectedRecords.filter((record) => record.id !== recordId).length;
+      const remainingPages = Math.max(1, Math.ceil(remainingCount / RECORDS_PER_PAGE));
+      if (currentRecordPage > remainingPages) {
+        setRecordPage({ date: selectedDate, number: remainingPages });
+        router.replace(`/records?date=${encodeURIComponent(selectedDate)}&page=${remainingPages}`, { scroll: false });
+        requestAnimationFrame(() => {
+          recordsStartRef.current?.focus({ preventScroll: true });
+          recordsStartRef.current?.scrollIntoView({ block: "start", behavior: "instant" });
+        });
+      }
       const delta = result.data.growthPointsDelta;
       setActionMessage({
         tone: "success",
@@ -470,87 +563,99 @@ export function RecordsDashboard({
                 </div>
               </section>
             ) : (
-              <ul className="mt-5 space-y-3">
-                {selectedRecords.map((record, index) => (
-                  <li key={record.id} className="rounded-xl border border-line bg-white p-4">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <p className="text-[10px] font-bold text-accent-strong">
-                          {BODY_PART_LABELS[record.bodyPart]} · {index + 1}
-                        </p>
-                        <h2 className="mt-1 truncate text-base font-semibold">
-                          {record.exerciseName}
-                        </h2>
-                      </div>
-                      <p className="data-number shrink-0 text-base font-bold">
-                        {isUnconvertedRecord(record) ? "未換算" : formatVolume(record.volumeKg)}
-                      </p>
-                    </div>
-                    <p className="mt-3 text-sm font-bold text-muted">
-                      {describeRecordLoad(
-                        record,
-                        exercises.find((item) => item.id === record.exerciseId),
-                        settings.weightUnit,
-                      )}
-                    </p>
-                    {record.memo ? (
-                      <p className="mt-3 border-t border-line pt-3 text-sm leading-6 text-ink/75">
-                        {record.memo}
-                      </p>
-                    ) : null}
-                    <div className="mt-3 flex items-center justify-end gap-2 border-t border-line pt-3">
-                      <Link
-                        href={`/records/${encodeURIComponent(record.id)}/edit`}
-                        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-line px-3 text-xs font-bold hover:bg-canvas"
-                      >
-                        <PencilLine aria-hidden="true" size={14} />
-                        編集
-                      </Link>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActionMessage(null);
-                          setConfirmingDeleteId(record.id);
-                        }}
-                        disabled={deletingId !== null}
-                        aria-label={`${record.exerciseName}の記録を削除`}
-                        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-line px-3 text-xs font-bold text-accent-strong hover:bg-canvas disabled:cursor-wait disabled:opacity-55"
-                      >
-                        <Trash2 aria-hidden="true" size={14} />
-                        削除
-                      </button>
-                    </div>
-                    {confirmingDeleteId === record.id ? (
-                      <div role="alertdialog" aria-label="記録の削除の確認" className="mt-3 rounded-xl border border-accent-strong/40 bg-canvas/50 p-4">
-                        <p className="text-sm leading-6 font-bold">
-                          この記録を削除しますか？
-                        </p>
-                        <p className="mt-1 text-xs leading-5 text-muted">
-                          元に戻せません。この記録で得た育成ポイントも減ります（すでに使った分は戻りません）。
-                        </p>
-                        <div className="mt-3 grid grid-cols-2 gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setConfirmingDeleteId(null)}
-                            disabled={deletingId !== null}
-                            className="min-h-11 rounded-lg border border-line bg-white text-xs font-bold disabled:opacity-55"
-                          >
-                            キャンセル
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void handleDelete(record.id)}
-                            disabled={deletingId !== null}
-                            className="min-h-11 rounded-lg bg-accent-strong text-xs font-bold text-white disabled:cursor-wait disabled:bg-line disabled:text-muted"
-                          >
-                            {deletingId === record.id ? "削除中" : "削除する"}
-                          </button>
+              <>
+                <p ref={recordsStartRef} tabIndex={-1} role="status" className="mt-5 scroll-mt-5 text-xs font-bold text-muted">
+                  {recordPageStart + 1}〜{recordPageStart + visibleRecords.length}件 / 全{selectedRecords.length.toLocaleString("ja-JP")}件
+                </p>
+                {recordPageCount > 1 ? (
+                  <RecordPagination page={currentRecordPage} pageCount={recordPageCount} disabled={deletingId !== null} position="上" onPageChange={changeRecordPage} />
+                ) : null}
+                <ul className="mt-4 space-y-3" aria-label="この日のトレーニング記録">
+                  {visibleRecords.map((record, index) => (
+                    <li key={record.id} className="rounded-xl border border-line bg-white p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-bold text-accent-strong">
+                            {BODY_PART_LABELS[record.bodyPart]} · {recordPageStart + index + 1}
+                          </p>
+                          <h2 className="mt-1 truncate text-base font-semibold">
+                            {record.exerciseName}
+                          </h2>
                         </div>
+                        <p className="data-number shrink-0 text-base font-bold">
+                          {isUnconvertedRecord(record) ? "未換算" : formatVolume(record.volumeKg)}
+                        </p>
                       </div>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
+                      <p className="mt-3 text-sm font-bold text-muted">
+                        {describeRecordLoad(
+                          record,
+                          exercises.find((item) => item.id === record.exerciseId),
+                          settings.weightUnit,
+                        )}
+                      </p>
+                      {record.memo ? (
+                        <p className="mt-3 border-t border-line pt-3 text-sm leading-6 text-ink/75">
+                          {record.memo}
+                        </p>
+                      ) : null}
+                      <div className="mt-3 flex items-center justify-end gap-2 border-t border-line pt-3">
+                        <Link
+                          href={`/records/${encodeURIComponent(record.id)}/edit?returnPage=${currentRecordPage}`}
+                          prefetch={false}
+                          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-line px-3 text-xs font-bold hover:bg-canvas"
+                        >
+                          <PencilLine aria-hidden="true" size={14} />
+                          編集
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActionMessage(null);
+                            setConfirmingDeleteId(record.id);
+                          }}
+                          disabled={deletingId !== null}
+                          aria-label={`${record.exerciseName}の記録を削除`}
+                          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-line px-3 text-xs font-bold text-accent-strong hover:bg-canvas disabled:cursor-wait disabled:opacity-55"
+                        >
+                          <Trash2 aria-hidden="true" size={14} />
+                          削除
+                        </button>
+                      </div>
+                      {confirmingDeleteId === record.id ? (
+                        <div role="alertdialog" aria-label="記録の削除の確認" className="mt-3 rounded-xl border border-accent-strong/40 bg-canvas/50 p-4">
+                          <p className="text-sm leading-6 font-bold">
+                            この記録を削除しますか？
+                          </p>
+                          <p className="mt-1 text-xs leading-5 text-muted">
+                            元に戻せません。この記録で得た育成ポイントも減ります（すでに使った分は戻りません）。
+                          </p>
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setConfirmingDeleteId(null)}
+                              disabled={deletingId !== null}
+                              className="min-h-11 rounded-lg border border-line bg-white text-xs font-bold disabled:opacity-55"
+                            >
+                              キャンセル
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleDelete(record.id)}
+                              disabled={deletingId !== null}
+                              className="min-h-11 rounded-lg bg-accent-strong text-xs font-bold text-white disabled:cursor-wait disabled:bg-line disabled:text-muted"
+                            >
+                              {deletingId === record.id ? "削除中" : "削除する"}
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+                {recordPageCount > 1 ? (
+                  <RecordPagination page={currentRecordPage} pageCount={recordPageCount} disabled={deletingId !== null} position="下" onPageChange={changeRecordPage} />
+                ) : null}
+              </>
             )}
 
             <Link

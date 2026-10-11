@@ -117,6 +117,25 @@ try {
     await check(`apply unmodified migration ${name}`, () => db.exec(sql));
   }
 
+  await check("cloud pagination indexes match owner, timestamp and UUID ordering", async () => {
+    const indexes = await rows(`
+      select c.relname as name, i.indisvalid as valid, i.indisunique as unique,
+        pg_get_indexdef(i.indexrelid) as definition,
+        pg_get_expr(i.indpred, i.indrelid) as predicate
+      from pg_index i join pg_class c on c.oid = i.indexrelid
+      where c.relname in ('exercises_user_created_id_idx', 'workout_logs_user_created_id_idx')
+      order by c.relname
+    `);
+    assert.equal(indexes.length, 2);
+    for (const index of indexes) {
+      assert.ok(index.valid);
+      assert.equal(index.unique, false);
+      assert.match(index.definition, /USING btree \(user_id, created_at, id\)/);
+    }
+    assert.equal(indexes[0].predicate, null);
+    assert.equal(indexes[1].predicate, "(deleted_at IS NULL)");
+  });
+
   await check("every public user-data table has RLS enabled", async () => {
     const catalog = await rows("select c.relname, c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r' order by c.relname");
     assert.deepEqual(catalog.map((row) => row.relname), tables);
@@ -206,6 +225,128 @@ try {
     }));
   }
   assert.notEqual(exercises[A], exercises[B]);
+
+  await check("expected-user overloads are invoker functions callable only by authenticated app users", async () => {
+    const signatures = [
+      "public.add_exercise(text,text,boolean,boolean,uuid)",
+      "public.save_body_weight(date,numeric,uuid)",
+      "public.update_display_name(text,uuid)",
+    ];
+    for (const signature of signatures) {
+      const functionInfo = await one(`select p.prosecdef as definer, p.pronargdefaults as defaults,
+        has_function_privilege('authenticated', p.oid, 'EXECUTE') as authenticated,
+        has_function_privilege('anon', p.oid, 'EXECUTE') as anon
+        from pg_proc p where p.oid = $1::regprocedure`, [signature]);
+      assert.deepEqual(functionInfo, { definer: false, defaults: 0, authenticated: true, anon: false });
+    }
+  });
+
+  await check("previous mutation signatures remain available with their existing app privileges", async () => {
+    for (const signature of ["public.add_exercise(text,text,boolean,boolean)", "public.save_body_weight(date,numeric)", "public.update_display_name(text)"]) {
+      const access = await one(`select has_function_privilege('authenticated', $1::regprocedure, 'EXECUTE') as authenticated,
+        has_function_privilege('anon', $1::regprocedure, 'EXECUTE') as anon`, [signature]);
+      assert.deepEqual(access, { authenticated: true, anon: false });
+    }
+  });
+
+  const expectedUserMutations = [
+    ["add exercise", "select public.add_exercise('Expected account exercise', 'legs', true, false, $1::uuid) as result", (result) => {
+      assert.equal(result.name, "Expected account exercise");
+      assert.equal(result.calculationPattern, "B");
+      assert.equal(Number(result.bwRatio), 0.74);
+      assert.equal(result.created, true);
+    }],
+    ["body weight", "select public.save_body_weight('2026-01-10', 73.25, $1::uuid) as result", (result) => {
+      assert.equal(Number(result.weightKg), 73.25);
+    }],
+    ["display name", "select public.update_display_name('  Expected account  ', $1::uuid) as result", (result) => {
+      assert.equal(result.displayName, "Expected account");
+    }],
+  ];
+  const beforeExpectedUserA = await snapshot(A);
+  const beforeExpectedUserB = await snapshot(B);
+  for (const [name, sql, assertResult] of expectedUserMutations) {
+    for (const user of [A, B]) {
+      const other = user === A ? B : A;
+      await check(`expected-user ${name} succeeds for matching account ${user[0]}`, () => asUser(user, async () => {
+        assertResult((await one(sql, [user])).result);
+      }));
+      // Simulates a payload started under account A arriving with account B's
+      // token, and the converse. Neither account may receive that mutation.
+      await check(`expected-user ${name} rejects another account's pending payload under ${user[0]}`, () => denied(user, sql, [other]));
+      await check(`expected-user ${name} rejects a null expected identity under ${user[0]}`, () => denied(user, sql, [null]));
+    }
+    await check(`anonymous users cannot execute expected-user ${name}`, () => denied(null, sql, [A]));
+    await check(`expected-user ${name} rejects an authenticated role without identity`, () => denied("", sql, [A], "28000"));
+    await check(`expected-user ${name} rejects a non-authenticated JWT role even with identity`, () => asUser(A, async () => {
+      await db.query("select set_config('request.jwt.claim.role', 'anon', true)");
+      await assert.rejects(() => db.query(sql, [A]), (error) => error.code === "28000");
+    }));
+  }
+  await check("rejected expected-user mutations leave both account snapshots unchanged", async () => {
+    assert.deepEqual(await snapshot(A), beforeExpectedUserA);
+    assert.deepEqual(await snapshot(B), beforeExpectedUserB);
+  });
+
+  // The fixtures share timestamps deliberately: UUID ordering must advance the
+  // cursor without losing tied rows. They are rolled back after each check.
+  for (const table of ["exercises", "workout_logs"]) {
+    await check(`cloud ${table} keyset pages keep tied rows and hide other owners`, async () => {
+      await db.exec("begin");
+      try {
+        const fixtureIds = [1, 2, 3, 4, 5].map((number) => `bbbbbbbb-bbbb-4bbb-8bbb-${String(number).padStart(12, "0")}`);
+        for (const [position, id] of fixtureIds.entries()) {
+          const createdAt = position === 4 ? "2100-01-01T00:00:01Z" : "2100-01-01T00:00:00Z";
+          if (table === "exercises") {
+            await db.query("insert into public.exercises (id, user_id, name, body_part, created_at) values ($1, $2, $3, 'other', $4)", [id, A, `Pagination ${position}`, createdAt]);
+          } else {
+            await db.query("insert into public.workout_logs (id, user_id, exercise_id, client_request_id, workout_date, weight_kg, load_per_unit_kg, reps, sets, created_at) values ($1, $2, $3, $1, '2026-01-01', 10, 10, 1, 1, $4)", [id, A, exercises[A], createdAt]);
+          }
+        }
+        const foreignId = "cccccccc-cccc-4ccc-8ccc-000000000001";
+        if (table === "exercises") {
+          await db.query("insert into public.exercises (id, user_id, name, body_part, created_at) values ($1, $2, 'Foreign pagination', 'other', '2100-01-01')", [foreignId, B]);
+        } else {
+          await db.query("insert into public.workout_logs (id, user_id, exercise_id, client_request_id, workout_date, weight_kg, load_per_unit_kg, reps, sets, created_at) values ($1, $2, $3, $1, '2026-01-01', 10, 10, 1, 1, '2100-01-01')", [foreignId, B, exercises[B]]);
+          const deletedId = "dddddddd-dddd-4ddd-8ddd-000000000001";
+          await db.query("insert into public.workout_logs (id, user_id, exercise_id, client_request_id, workout_date, weight_kg, load_per_unit_kg, reps, sets, created_at, deleted_at) values ($1, $2, $3, $1, '2026-01-01', 10, 10, 1, 1, '2100-01-01', '2100-01-02')", [deletedId, A, exercises[A]]);
+        }
+        await db.query("select set_config('request.jwt.claim.sub', $1, true)", [A]);
+        await db.query("select set_config('request.jwt.claim.role', 'authenticated', true)");
+        await db.exec("set local role authenticated");
+        const selected = [];
+        let cursor = null;
+        for (;;) {
+          const page = await rows(`select id, created_at from public.${table}
+            where user_id = $1 and created_at >= '2100-01-01'
+            ${table === "workout_logs" ? "and deleted_at is null" : ""}
+            ${cursor ? "and (created_at > $2::timestamptz or (created_at = $2::timestamptz and id > $3::uuid))" : ""}
+            order by created_at, id limit 2`, cursor ? [A, cursor.created_at, cursor.id] : [A]);
+          selected.push(...page.map((row) => row.id));
+          if (page.length < 2) break;
+          cursor = page.at(-1);
+        }
+        assert.deepEqual(selected, fixtureIds);
+      } finally {
+        await db.exec("rollback");
+      }
+    });
+  }
+
+  await check("cloud pagination indexes are eligible for ordered account scans", () => asUser(A, async () => {
+    // Favor ordered index paths explicitly: small fixtures may otherwise use a
+    // cheaper existing index and Sort. This proves eligibility, not the default
+    // production plan or a speed improvement; EXPLAIN ANALYZE is not measured.
+    await db.exec("set local enable_seqscan = off; set local enable_sort = off");
+    for (const table of ["exercises", "workout_logs"]) {
+      const plan = await rows(`explain select * from public.${table} where user_id = $1
+        ${table === "workout_logs" ? "and deleted_at is null" : ""}
+        order by created_at, id limit 500`, [A]);
+      assert.ok(plan.some((row) => row["QUERY PLAN"].includes(`${table}_user_created_id_idx`)), JSON.stringify(plan));
+      assert.ok(!plan.some((row) => /\bSort\b/.test(row["QUERY PLAN"])), JSON.stringify(plan));
+    }
+  }));
+
   // ---- Load calculation (migration 0003). The expected numbers are shared
   // with lib/domain/load.test.ts so the SQL and TypeScript engines stay aligned.
   const master = async (user, key) => (await asUser(user, () => one("select id from public.exercises where master_key = $1", [key]))).id;

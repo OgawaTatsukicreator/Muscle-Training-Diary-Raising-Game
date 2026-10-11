@@ -196,6 +196,10 @@ export function formatWeight(weightKg: number, unit: WeightUnit): string {
   return `${new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 1 }).format(value)} ${unit}`;
 }
 
+const volumeNumberFormatter = new Intl.NumberFormat("ja-JP", {
+  maximumFractionDigits: 1,
+});
+
 export function formatVolume(volumeKg: number): string {
-  return `${new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 1 }).format(volumeKg)} kg`;
+  return `${volumeNumberFormatter.format(volumeKg)} kg`;
 }

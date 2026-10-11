@@ -4,7 +4,9 @@ import { ArrowLeft, CheckCircle2, Eye, EyeOff, Mail, UserRound } from "lucide-re
 import Link from "next/link";
 import { useMemo, useRef, useState, type FormEvent } from "react";
 
+import { GuestEntry } from "@/components/auth/guest-entry";
 import { registrationCredentialsSchema } from "@/lib/auth/credentials";
+import { clearGuestPreference } from "@/lib/auth/guest";
 import { registrationErrorMessage } from "@/lib/auth/registration-error";
 import { createClient } from "@/lib/supabase/client";
 
@@ -96,6 +98,7 @@ export function RegisterForm({
         return;
       }
       if (data.session) {
+        clearGuestPreference();
         window.location.assign(nextPath);
         return;
       }
@@ -147,6 +150,7 @@ export function RegisterForm({
           >
             入力内容を変更
           </button>
+          <GuestEntry nextPath={nextPath} />
         </section>
       </main>
     );
@@ -170,14 +174,14 @@ export function RegisterForm({
           初回登録
         </h1>
         <p className="mt-3 text-sm leading-6 text-muted">
-          初回だけ登録すると、あなた専用の記録・設定・マソ君が用意されます。
+          初回だけ登録すると、あなた専用の記録・設定・マソ君が用意されます。次回からはログイン状態を保って自動で入室します。
         </p>
 
         {!configured ? (
           <div className="mt-7 rounded-2xl border border-line bg-canvas/70 p-4">
-            <p className="font-black">現在はローカルプレビューです</p>
+            <p className="font-black">アカウント登録の準備中です</p>
             <p className="mt-2 text-sm leading-6 text-muted">
-              Supabaseの接続情報を設定したあと、この画面からアカウントを作成できます。
+              現在はゲストとして記録をはじめられます。アカウント登録が利用できるようになるまで、端末内に保存します。
             </p>
           </div>
         ) : (
@@ -343,6 +347,7 @@ export function RegisterForm({
         <p className="mt-6 border-t border-line pt-5 text-center text-sm text-muted">
           登録済みの方は<Link href={`/login?next=${encodeURIComponent(nextPath)}`} className="ml-1 inline-flex min-h-11 items-center font-bold text-accent-strong underline underline-offset-4">ログイン</Link>
         </p>
+        <GuestEntry nextPath={nextPath} disabled={isSubmitting} />
       </section>
     </main>
   );

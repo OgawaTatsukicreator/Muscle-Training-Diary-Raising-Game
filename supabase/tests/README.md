@@ -20,8 +20,12 @@ node supabase/tests/account-isolation.mjs $isolationRuntime
 最後に次の表示が出れば成功です。失敗した場合は例外と終了コード1を返します。
 
 ```text
-PASS: 355 PostgreSQL execution checks; no remote database contacted.
+PASS: 391 PostgreSQL execution checks; no remote database contacted.
 ```
+
+## 2026年10月12日の追加検証
+
+0009のページ取得用インデックス、0010の操作開始時アカウントを照合するRPCを含め、391項目が成功しました。同時刻レコードの次ページ取得・削除済み記録の除外、アカウントA/Bの不一致・未指定・未認証時の拒否と保存状態の維持をDBエンジンで確認しています。インデックスの順序走査が可能なことを確認しましたが、本番DBの実行計画や速度を測定した結果ではありません。
 
 ## 2026年10月5日の結果
 

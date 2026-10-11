@@ -3,8 +3,8 @@ import { redirect } from "next/navigation";
 
 import { RegisterForm } from "@/components/auth/register-form";
 import { safeNextPath } from "@/lib/auth/redirect";
+import { hasVerifiedSession } from "@/lib/auth/server";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
-import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = {
   title: "アカウント作成",
@@ -19,14 +19,7 @@ export default async function RegisterPage({
   const nextPath = safeNextPath(params.next);
   const configured = isSupabaseConfigured();
 
-  if (configured) {
-    const supabase = await createClient();
-    const { data } = (await supabase?.auth.getClaims()) ?? { data: null };
-
-    if (data?.claims) {
-      redirect(nextPath);
-    }
-  }
+  if (await hasVerifiedSession()) redirect(nextPath);
 
   return (
     <RegisterForm

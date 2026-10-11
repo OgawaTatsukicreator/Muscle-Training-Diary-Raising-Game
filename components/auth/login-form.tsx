@@ -1,10 +1,12 @@
 "use client";
 
-import { ArrowLeft, Eye, EyeOff, LogIn, LogOut, Mail } from "lucide-react";
+import { ArrowLeft, Eye, EyeOff, LogIn, Mail } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
+import { GuestEntry } from "@/components/auth/guest-entry";
 import { loginCredentialsSchema } from "@/lib/auth/credentials";
+import { clearGuestPreference } from "@/lib/auth/guest";
 import { createClient } from "@/lib/supabase/client";
 
 type LoginFormProps = {
@@ -31,12 +33,12 @@ function statusMessage(status: LoginFormProps["status"]): string | null {
 
 export function LoginForm({ configured, nextPath, status }: LoginFormProps) {
   const supabase = useMemo(() => createClient(), []);
+  const submittingRef = useRef(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCheckingSession, setIsCheckingSession] = useState(configured);
-  const [isSignedIn, setIsSignedIn] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [message, setMessage] = useState<string | null>(() =>
     statusMessage(status),
@@ -49,22 +51,30 @@ export function LoginForm({ configured, nextPath, status }: LoginFormProps) {
 
     let active = true;
 
-    void supabase.auth.getSession().then(({ data }) => {
+    void supabase.auth.getClaims().then(({ data, error }) => {
+      if (!active) return;
+      if (!error && data?.claims?.sub) {
+        clearGuestPreference();
+        window.location.replace(nextPath);
+        return;
+      }
+      setIsCheckingSession(false);
+    }).catch(() => {
       if (active) {
-        setIsSignedIn(Boolean(data.session));
         setIsCheckingSession(false);
+        setMessage("ログイン状態を確認できませんでした。接続を確認してログインするか、ゲストとしてはじめられます。");
       }
     });
 
     return () => {
       active = false;
     };
-  }, [supabase]);
+  }, [supabase, nextPath]);
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!supabase || isSubmitting) {
+    if (!supabase || submittingRef.current) {
       return;
     }
 
@@ -78,42 +88,30 @@ export function LoginForm({ configured, nextPath, status }: LoginFormProps) {
       }
       setFieldErrors(errors);
       setMessage("入力内容を確認してください。");
+      const firstField = parsed.error.issues[0]?.path[0] as LoginField;
+      document.getElementById(`login-${firstField}`)?.focus();
       return;
     }
 
+    submittingRef.current = true;
     setIsSubmitting(true);
     setFieldErrors({});
     setMessage(null);
 
-    const { error } = await supabase.auth.signInWithPassword(parsed.data);
-
-    if (error) {
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword(parsed.data);
+      if (error || !data.session) {
+        setMessage("ログインできませんでした。メールアドレスとパスワードを確認してください。登録直後は確認メールのリンクも開いてください。");
+        return;
+      }
+      clearGuestPreference();
+      window.location.assign(nextPath);
+    } catch {
+      setMessage("通信できませんでした。インターネット接続を確認し、もう一度ログインしてください。");
+    } finally {
+      submittingRef.current = false;
       setIsSubmitting(false);
-      setMessage(
-        "ログインできませんでした。メールアドレスとパスワードを確認してください。",
-      );
-      return;
     }
-
-    window.location.assign(nextPath);
-  }
-
-  async function handleLogout() {
-    if (!supabase || isSubmitting) {
-      return;
-    }
-
-    setIsSubmitting(true);
-    const { error } = await supabase.auth.signOut();
-    setIsSubmitting(false);
-
-    if (error) {
-      setMessage("ログアウトできませんでした。もう一度お試しください。");
-      return;
-    }
-
-    setIsSignedIn(false);
-    setMessage("ログアウトしました。");
   }
 
   return (
@@ -132,14 +130,14 @@ export function LoginForm({ configured, nextPath, status }: LoginFormProps) {
         </p>
         <h1 className="mt-2 text-3xl font-black tracking-[-0.05em]">ログイン</h1>
         <p className="mt-3 text-sm leading-6 text-muted">
-          登録したメールアドレスとパスワードで、あなたの記録を開きます。
+          登録したメールアドレスとパスワードで、あなたの記録を開きます。ログイン状態はこのブラウザで保持され、次回からは自動で入室します。
         </p>
 
         {!configured ? (
           <div className="mt-7 rounded-2xl border border-line bg-canvas/70 p-4">
-            <p className="font-black">現在はローカルプレビューです</p>
+            <p className="font-black">アカウント接続の準備中です</p>
             <p className="mt-2 text-sm leading-6 text-muted">
-              Supabaseの接続情報を設定すると、アカウントごとに記録を保存できます。今は端末内だけに保存します。
+              現在はゲストとして記録をはじめられます。記録はこの端末のブラウザに保存します。
             </p>
           </div>
         ) : isCheckingSession ? (
@@ -147,32 +145,10 @@ export function LoginForm({ configured, nextPath, status }: LoginFormProps) {
             className="mt-7 h-14 animate-pulse rounded-2xl bg-canvas"
             aria-label="ログイン状態を確認中"
           />
-        ) : isSignedIn ? (
-          <div className="mt-7">
-            <p className="rounded-2xl border border-line bg-canvas/70 p-4 text-sm font-bold">
-              この端末ではログイン済みです。
-            </p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <Link
-                href={nextPath}
-                className="flex min-h-13 items-center justify-center rounded-2xl bg-accent-strong px-5 font-black text-white"
-              >
-                アプリへ戻る
-              </Link>
-              <button
-                type="button"
-                onClick={handleLogout}
-                disabled={isSubmitting}
-                className="flex min-h-13 items-center justify-center gap-2 rounded-2xl border border-line bg-white px-5 font-black disabled:cursor-wait disabled:text-muted"
-              >
-                <LogOut aria-hidden="true" size={19} />
-                {isSubmitting ? "ログアウト中" : "ログアウト"}
-              </button>
-            </div>
-          </div>
         ) : (
           <>
-            <form onSubmit={handleLogin} noValidate className="mt-7">
+            <form onSubmit={handleLogin} noValidate aria-busy={isSubmitting} className="mt-7">
+              <fieldset disabled={isSubmitting} className="min-w-0">
               <div>
                 <label htmlFor="login-email" className="mb-2 block text-sm font-black">
                   メールアドレス
@@ -251,6 +227,7 @@ export function LoginForm({ configured, nextPath, status }: LoginFormProps) {
                 <LogIn aria-hidden="true" size={20} />
                 {isSubmitting ? "ログインしています" : "ログイン"}
               </button>
+              </fieldset>
             </form>
 
             <p className="mt-6 border-t border-line pt-5 text-center text-sm text-muted">
@@ -274,6 +251,7 @@ export function LoginForm({ configured, nextPath, status }: LoginFormProps) {
             {message}
           </p>
         ) : null}
+        <GuestEntry nextPath={nextPath} disabled={isSubmitting} />
       </section>
     </main>
   );

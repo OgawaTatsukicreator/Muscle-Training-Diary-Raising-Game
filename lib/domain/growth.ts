@@ -116,7 +116,7 @@ export function masoPhaseForLevel(level: number): number {
 
 export function masoImageForLevel(level: number): string {
   const phase = masoPhaseForLevel(level);
-  return `/maso/phases-50/phase-${String(phase).padStart(2, "0")}.svg`;
+  return `/maso/optimized/phase-${String(phase).padStart(2, "0")}.webp`;
 }
 
 export function rewardsFromVolume(volumeKg: number): {

@@ -15,6 +15,11 @@ import {
   formatVolume,
 } from "@/lib/domain/workout";
 
+const weekdayFormatter = new Intl.DateTimeFormat("ja-JP", {
+  timeZone: "UTC",
+  weekday: "short",
+});
+
 function dateKeyFromUtcDate(date: Date): string {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
@@ -34,10 +39,7 @@ export function AnalyticsDashboard({ today }: { today: string }) {
 
       return {
         dateKey,
-        label: new Intl.DateTimeFormat("ja-JP", {
-          timeZone: "UTC",
-          weekday: "short",
-        }).format(date),
+        label: weekdayFormatter.format(date),
         volume,
       };
     });
@@ -52,7 +54,6 @@ export function AnalyticsDashboard({ today }: { today: string }) {
           .filter((record) => record.bodyPart === bodyPart)
           .reduce((sum, record) => sum + record.volumeKg, 0),
       }))
-        .filter((item) => item.volume > 0)
         .sort((a, b) => b.volume - a.volume),
     [records],
   );
@@ -98,9 +99,7 @@ export function AnalyticsDashboard({ today }: { today: string }) {
         />
         <StorageNotice />
 
-        {!isReady ? (
-          <div className="surface-panel h-72 animate-pulse rounded-xl" />
-        ) : records.length === 0 ? (
+        {isReady && records.length === 0 ? (
           <section className="surface-panel rounded-xl px-6 py-14 text-center">
             <span className="mx-auto grid size-16 place-items-center rounded-full bg-accent-soft text-accent">
               <BarChart3 aria-hidden="true" size={28} />
@@ -118,16 +117,19 @@ export function AnalyticsDashboard({ today }: { today: string }) {
             </Link>
           </section>
         ) : (
-          <div className="grid gap-5">
+          <div className="grid gap-5" aria-busy={!isReady}>
+            {!isReady ? <span className="sr-only" role="status">記録を読み込んでいます</span> : null}
             <section className="surface-panel rounded-xl p-5 sm:p-6">
-              <div className="flex items-start justify-between gap-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
                   <p className="text-xs font-bold text-muted">直近7日間</p>
                   <h2 className="mt-1 text-lg font-semibold">トータルボリューム</h2>
                 </div>
-                <div className="text-right">
-                  <p className="data-number text-2xl font-bold">
-                    {formatVolume(sevenDayTotal)}
+                <div className="sm:text-right">
+                  <p className="data-number h-8 text-2xl font-bold">
+                    {isReady ? formatVolume(sevenDayTotal) : (
+                      <span aria-hidden="true" className="inline-block h-7 w-40 animate-pulse rounded bg-line" />
+                    )}
                   </p>
                   <p className="mt-1 text-[11px] font-bold text-muted">7日合計</p>
                 </div>
@@ -139,21 +141,25 @@ export function AnalyticsDashboard({ today }: { today: string }) {
                 aria-label="直近7日間のトータルボリューム棒グラフ"
               >
                 {dailyData.map((day) => {
-                  const height = day.volume
-                    ? Math.max(8, (day.volume / maxDailyVolume) * 100)
-                    : 2;
+                  const height = !isReady
+                    ? 55
+                    : day.volume
+                      ? Math.max(8, (day.volume / maxDailyVolume) * 100)
+                      : 2;
                   return (
                     <div
                       key={day.dateKey}
                       className="flex h-full min-w-0 flex-col justify-end gap-2"
                       title={`${day.dateKey}: ${formatVolume(day.volume)}`}
                     >
-                      <div
-                        className={`mx-auto w-full max-w-10 rounded-t-xl ${
-                          day.volume > 0 ? "bg-accent" : "bg-line"
-                        }`}
-                        style={{ height: `${height}%` }}
-                      />
+                      <div className="min-h-0 flex-1">
+                        <div
+                          className={`mx-auto h-full w-full max-w-10 origin-bottom rounded-t-xl ${
+                            !isReady ? "animate-pulse bg-line" : day.volume > 0 ? "bg-accent" : "bg-line"
+                          }`}
+                          style={{ transform: `scaleY(${height / 100})` }}
+                        />
+                      </div>
                       <span className="pb-2 text-center text-[11px] font-bold text-muted">
                         {day.label}
                       </span>
@@ -178,23 +184,27 @@ export function AnalyticsDashboard({ today }: { today: string }) {
                 </div>
                 <TrendingUp aria-hidden="true" className="text-accent" size={22} />
               </div>
-              {bodyPartData.length === 0 ? (
-                <p className="mt-6 text-sm leading-6 text-muted">
-                  ボリュームに換算された記録がまだありません。
-                </p>
-              ) : null}
+              <p className="mt-2 text-xs leading-5 text-muted">
+                換算済みの記録を集計しています。記録がない部位は0 kgです。
+              </p>
               <ul className="mt-6 space-y-4">
                 {bodyPartData.map((item) => (
                   <li key={item.bodyPart}>
-                    <div className="mb-2 flex items-center justify-between gap-3 text-xs font-bold">
+                    <div className="mb-2 flex h-4 items-center justify-between gap-3 text-xs font-bold">
                       <span>{BODY_PART_LABELS[item.bodyPart]}</span>
-                      <span className="font-mono">{formatVolume(item.volume)}</span>
+                      <span className="w-[15ch] text-right font-mono">
+                        {isReady ? formatVolume(item.volume) : (
+                          <span aria-hidden="true" className="inline-block h-4 w-16 animate-pulse rounded bg-line align-middle" />
+                        )}
+                      </span>
                     </div>
                     <div className="h-3 overflow-hidden rounded-full bg-canvas">
                       <div
-                        className="h-full rounded-full bg-accent"
+                        className={`h-full rounded-full ${!isReady ? "animate-pulse bg-line" : "bg-accent"}`}
                         style={{
-                          width: `${Math.max(5, (item.volume / maxBodyPartVolume) * 100)}%`,
+                          width: !isReady
+                            ? "100%"
+                            : `${item.volume > 0 ? Math.max(5, (item.volume / maxBodyPartVolume) * 100) : 0}%`,
                         }}
                       />
                     </div>
@@ -206,9 +216,9 @@ export function AnalyticsDashboard({ today }: { today: string }) {
             <section className="surface-panel rounded-xl p-5 sm:p-6">
               <p className="text-xs font-bold text-muted">全期間</p>
               <h2 className="mt-1 text-lg font-semibold">種目別ボリューム</h2>
-              {exerciseData.length === 0 ? (
+              {!isReady || exerciseData.length === 0 ? (
                 <p className="mt-5 text-sm leading-6 text-muted">
-                  ボリュームに換算された記録がまだありません。
+                  {!isReady ? "記録を読み込んでいます。" : "ボリュームに換算された記録がまだありません。"}
                 </p>
               ) : null}
               <ol className="mt-5 divide-y divide-line">

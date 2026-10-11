@@ -105,10 +105,10 @@ describe("growth calculations", () => {
   });
 
   it("builds the matching zero-padded mascot image path", () => {
-    expect(masoImageForLevel(1)).toBe("/maso/phases-50/phase-01.svg");
-    expect(masoImageForLevel(9)).toBe("/maso/phases-50/phase-09.svg");
-    expect(masoImageForLevel(50)).toBe("/maso/phases-50/phase-50.svg");
-    expect(masoImageForLevel(51)).toBe("/maso/phases-50/phase-50.svg");
+    expect(masoImageForLevel(1)).toBe("/maso/optimized/phase-01.webp");
+    expect(masoImageForLevel(9)).toBe("/maso/optimized/phase-09.webp");
+    expect(masoImageForLevel(50)).toBe("/maso/optimized/phase-50.webp");
+    expect(masoImageForLevel(51)).toBe("/maso/optimized/phase-50.webp");
   });
 
   it("converts volume at the configured boundaries", () => {

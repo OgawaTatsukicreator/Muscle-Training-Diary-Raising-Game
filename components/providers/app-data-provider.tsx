@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
@@ -61,6 +62,9 @@ import {
   type WorkoutRecord,
 } from "@/lib/domain/workout";
 import { createClient as createBrowserSupabaseClient } from "@/lib/supabase/client";
+import { isGuestEnabled } from "@/lib/auth/guest";
+import { guestEntryPath, isProtectedPath } from "@/lib/auth/routes";
+import { applyWorkoutChange, createAsyncQueue, fetchWorkoutChange } from "@/lib/supabase/workout-data";
 
 type SupabaseBrowserClient = NonNullable<
   ReturnType<typeof createBrowserSupabaseClient>
@@ -311,15 +315,15 @@ type CloudPageCursor = {
   id: string;
 };
 
-function isProtectedPath(pathname: string): boolean {
-  return (
-    pathname === "/" ||
-    pathname === "/records" ||
-    pathname.startsWith("/records/") ||
-    pathname === "/analytics" ||
-    pathname.startsWith("/analytics/")
-  );
+function subscribeGuestPreference(listener: () => void) {
+  window.addEventListener("focus", listener);
+  window.addEventListener("pageshow", listener);
+  return () => {
+    window.removeEventListener("focus", listener);
+    window.removeEventListener("pageshow", listener);
+  };
 }
+const noGuestOnServer = () => false;
 
 function fieldErrors(error: z.ZodError): Record<string, string> {
   const errors: Record<string, string> = {};
@@ -576,6 +580,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const supabase = useMemo(() => createBrowserSupabaseClient(), []);
+  const guestEnabled = useSyncExternalStore(subscribeGuestPreference, isGuestEnabled, noGuestOnServer);
   const [authState, setAuthState] = useState<{
     checked: boolean;
     userId: string | null;
@@ -585,6 +590,10 @@ function AppDataBridge({ children }: { children: ReactNode }) {
   const [cloudIssue, setCloudIssue] = useState<string | null>(null);
   const [cloudIssueUserId, setCloudIssueUserId] = useState<string | null>(null);
   const activeUserIdRef = useRef<string | null>(null);
+  const authEpochRef = useRef(0);
+  const cloudReadRevisionRef = useRef(0);
+  const workoutRefreshQueue = useMemo(() => createAsyncQueue(), []);
+  const cloudMutationQueue = useMemo(() => createAsyncQueue(), []);
   const cloudReady = Boolean(
     authState.userId && loadedCloudUserId === authState.userId,
   );
@@ -595,42 +604,57 @@ function AppDataBridge({ children }: { children: ReactNode }) {
     }
 
     let active = true;
+    let authEvents = 0;
+    const acceptSession = (userId: string | null) => {
+      if (activeUserIdRef.current !== userId) {
+        authEpochRef.current += 1;
+        cloudReadRevisionRef.current += 1;
+        setLoadedCloudUserId(null);
+        setCloudState(EMPTY_CLOUD_STATE);
+        setCloudIssue(null);
+        setCloudIssueUserId(null);
+      }
+      activeUserIdRef.current = userId;
+      setAuthState({ checked: true, userId });
+    };
 
     void supabase.auth.getSession().then(({ data }) => {
-      if (active) {
+      if (active && authEvents === 0) {
         const userId = data.session?.user.id ?? null;
-        activeUserIdRef.current = userId;
-        setAuthState({ checked: true, userId });
+        acceptSession(userId);
       }
+    }).catch(() => {
+      if (active && authEvents === 0) acceptSession(null);
     });
 
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
       if (active) {
+        authEvents += 1;
         const userId = session?.user.id ?? null;
-        activeUserIdRef.current = userId;
-        setAuthState({ checked: true, userId });
+        acceptSession(userId);
       }
     });
 
     return () => {
       active = false;
+      authEpochRef.current += 1;
+      activeUserIdRef.current = null;
       data.subscription.unsubscribe();
     };
   }, [supabase]);
 
   useEffect(() => {
     if (
-      supabase &&
       authState.checked &&
       !authState.userId &&
+      !guestEnabled &&
+      !isGuestEnabled() &&
       isProtectedPath(pathname)
     ) {
       const nextPath = `${window.location.pathname}${window.location.search}`;
-      router.replace(
-        `/login?next=${encodeURIComponent(nextPath)}&status=session-expired`,
-      );
+      router.replace(guestEntryPath(nextPath, false));
     }
-  }, [authState.checked, authState.userId, pathname, router, supabase]);
+  }, [authState.checked, authState.userId, guestEnabled, pathname, router]);
 
   const refreshCloudData = useCallback(async () => {
     if (!supabase || !authState.userId) {
@@ -638,10 +662,21 @@ function AppDataBridge({ children }: { children: ReactNode }) {
     }
 
     const requestedUserId = authState.userId;
+    const requestedEpoch = authEpochRef.current;
 
     try {
-      const nextState = await loadCloudData(supabase, requestedUserId);
-      if (activeUserIdRef.current !== requestedUserId) {
+      let nextState: CloudDataState | null = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const revision = cloudReadRevisionRef.current;
+        const snapshot = await loadCloudData(supabase, requestedUserId);
+        if (activeUserIdRef.current !== requestedUserId || authEpochRef.current !== requestedEpoch) return null;
+        if (revision === cloudReadRevisionRef.current) {
+          nextState = snapshot;
+          break;
+        }
+      }
+      if (!nextState) throw new Error("Cloud data changed while refreshing");
+      if (activeUserIdRef.current !== requestedUserId || authEpochRef.current !== requestedEpoch) {
         return null;
       }
 
@@ -651,7 +686,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       setCloudIssueUserId(null);
       return nextState;
     } catch {
-      if (activeUserIdRef.current !== requestedUserId) {
+      if (activeUserIdRef.current !== requestedUserId || authEpochRef.current !== requestedEpoch) {
         return null;
       }
 
@@ -674,41 +709,35 @@ function AppDataBridge({ children }: { children: ReactNode }) {
     }
 
     let active = true;
-    const loadingUserId = authState.userId;
-
-    void loadCloudData(supabase, loadingUserId)
-      .then((nextState) => {
-        if (active) {
-          setCloudState(nextState);
-          setLoadedCloudUserId(loadingUserId);
-          setCloudIssue(null);
-          setCloudIssueUserId(null);
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setLoadedCloudUserId(null);
-          setCloudIssue(
-            "クラウドのデータを読み込めませんでした。通信状態を確認して、もう一度読み込んでください。",
-          );
-          setCloudIssueUserId(loadingUserId);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [authState.checked, authState.userId, supabase]);
+    void Promise.resolve().then(() => active ? refreshCloudData() : null);
+    return () => { active = false; };
+  }, [authState.checked, authState.userId, refreshCloudData, supabase]);
 
   const storageMode: StorageMode = !authState.checked
     ? "loading"
-    : !supabase
-      ? "local"
-      : authState.userId
-        ? "supabase"
-        : "signed-out";
+    : authState.userId && supabase
+      ? "supabase"
+      : guestEnabled ? "local" : "signed-out";
   const usingCloud = storageMode === "supabase";
   const usingLocal = storageMode === "local";
+  const runAction = useCallback(<T,>(operation: () => Promise<ActionResult<T>>): Promise<ActionResult<T>> => {
+    if (!usingCloud) return operation();
+    const requestedUserId = authState.userId;
+    const requestedEpoch = authEpochRef.current;
+    return cloudMutationQueue(async () => {
+      if (!requestedUserId || activeUserIdRef.current !== requestedUserId || authEpochRef.current !== requestedEpoch) {
+        return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
+      }
+      cloudReadRevisionRef.current += 1;
+      try {
+        return await operation();
+      } catch {
+        return cloudFailure("通信できませんでした。接続を確認して、もう一度お試しください。");
+      } finally {
+        cloudReadRevisionRef.current += 1;
+      }
+    });
+  }, [authState.userId, cloudMutationQueue, usingCloud]);
   const activeState =
     storageMode === "loading"
       ? EMPTY_CLOUD_STATE
@@ -732,6 +761,66 @@ function AppDataBridge({ children }: { children: ReactNode }) {
     await refreshCloudData();
   }, [authState.userId, refreshCloudData, usingCloud]);
 
+  const refreshChangedWorkout = useCallback(async (workoutId: string, bodyWeightDate?: string) => {
+    if (!supabase || !authState.userId) return null;
+    const requestedUserId = authState.userId;
+    const requestedEpoch = authEpochRef.current;
+    try {
+      cloudReadRevisionRef.current += 1;
+      const change = await workoutRefreshQueue(async () => {
+        if (activeUserIdRef.current !== requestedUserId || authEpochRef.current !== requestedEpoch) throw new Error("Account changed");
+        return fetchWorkoutChange(supabase, requestedUserId, workoutId, cloudState.exercises, bodyWeightDate);
+      });
+      if (activeUserIdRef.current !== requestedUserId || authEpochRef.current !== requestedEpoch) return null;
+      setCloudState((current) => applyWorkoutChange(current, workoutId, change));
+      cloudReadRevisionRef.current += 1;
+      setCloudIssue(null);
+      setCloudIssueUserId(null);
+      return change;
+    } catch {
+      if (activeUserIdRef.current === requestedUserId && authEpochRef.current === requestedEpoch) {
+        setCloudIssue("保存後の最新データを確認できませんでした。通信状態を確認して、もう一度読み込んでください。");
+        setCloudIssueUserId(requestedUserId);
+      }
+      return null;
+    }
+  }, [authState.userId, cloudState.exercises, supabase, workoutRefreshQueue]);
+
+  const refreshMasoInventory = useCallback(async (): Promise<MasoStatus | null> => {
+    if (!supabase || !authState.userId) return null;
+    const requestedUserId = authState.userId;
+    const requestedEpoch = authEpochRef.current;
+    cloudReadRevisionRef.current += 1;
+    try {
+      return await workoutRefreshQueue(async () => {
+        if (activeUserIdRef.current !== requestedUserId || authEpochRef.current !== requestedEpoch) return null;
+        const [masoResult, foodResult, inventoryResult] = await Promise.all([
+          supabase.from("maso_status").select("maso_name, level, experience, growth_points").eq("user_id", requestedUserId).single(),
+          supabase.from("foods").select("balance, protein_balance").eq("user_id", requestedUserId).single(),
+          supabase.from("food_inventory").select("kind, balance").eq("user_id", requestedUserId),
+        ]);
+        if (masoResult.error || foodResult.error || inventoryResult.error) throw new Error("Inventory read failed");
+        const maso = masoRowSchema.parse(masoResult.data);
+        const food = foodRowSchema.parse(foodResult.data);
+        const items = foodItemsFromRows(z.array(foodInventoryRowSchema).parse(inventoryResult.data ?? []));
+        if (activeUserIdRef.current !== requestedUserId || authEpochRef.current !== requestedEpoch) return null;
+        const nextMaso: MasoStatus = { name: maso.maso_name, level: maso.level, experience: maso.experience,
+          growthPoints: maso.growth_points, food: food.balance, protein: food.protein_balance, items };
+        setCloudState((current) => ({ ...current, maso: nextMaso }));
+        cloudReadRevisionRef.current += 1;
+        setCloudIssue(null);
+        setCloudIssueUserId(null);
+        return nextMaso;
+      });
+    } catch {
+      if (activeUserIdRef.current === requestedUserId && authEpochRef.current === requestedEpoch) {
+        setCloudIssue("操作後の育成状態を確認できませんでした。通信状態を確認して、もう一度読み込んでください。");
+        setCloudIssueUserId(requestedUserId);
+      }
+      return null;
+    }
+  }, [authState.userId, supabase, workoutRefreshQueue]);
+
   const addWorkout = useCallback(
     async (
       draft: WorkoutDraft,
@@ -745,6 +834,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
       }
       const operationUserId = authState.userId;
+      const operationEpoch = authEpochRef.current;
 
       const parsed = workoutDraftSchema.safeParse(draft);
       if (!parsed.success) {
@@ -796,7 +886,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         }),
       );
 
-      if (activeUserIdRef.current !== operationUserId) {
+      if (activeUserIdRef.current !== operationUserId || authEpochRef.current !== operationEpoch) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
@@ -810,34 +900,14 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("保存結果を確認できませんでした。ページを再読み込みしてください。");
       }
 
-      const latest = await refreshCloudData();
-      const saved = latest?.records.find((record) => record.id === result.data.id);
+      const latest = await refreshChangedWorkout(result.data.id, parsed.data.bodyWeightKg !== null ? parsed.data.workoutDate : undefined);
+      const saved = latest?.record;
 
       if (saved) {
         return { ok: true, data: saved };
       }
 
-      const fallbackRecord = workoutRecordSchema.safeParse({
-        id: result.data.id,
-        clientRequestId,
-        workoutDate: parsed.data.workoutDate,
-        exerciseId: exercise.id,
-        exerciseName: exercise.name,
-        bodyPart: exercise.bodyPart,
-        weightKg: evaluation.value.weightKg,
-        reps: evaluation.value.reps,
-        sets: evaluation.value.sets,
-        volumeKg: result.data.volumeKg,
-        bodyWeightKg: result.data.bodyWeightKg ?? evaluation.value.bodyWeightKg,
-        assistKg: evaluation.value.assistKg,
-        loadPerUnitKg: result.data.loadPerUnitKg,
-        memo: parsed.data.memo.trim(),
-        createdAt: new Date().toISOString(),
-      });
-
-      return fallbackRecord.success
-        ? { ok: true, data: fallbackRecord.data }
-        : cloudFailure("記録は保存されました。最新の内容を表示するにはページを再読み込みしてください。");
+      return cloudFailure("記録はクラウドへ保存済みですが、表示を確認できませんでした。もう一度読み込んでください。同じ保存操作を再試行しても記録は重複しません。");
     },
     [
       authState.userId,
@@ -845,7 +915,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       cloudState.bodyWeights,
       cloudState.exercises,
       local,
-      refreshCloudData,
+      refreshChangedWorkout,
       supabase,
       usingLocal,
     ],
@@ -865,6 +935,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
       }
       const operationUserId = authState.userId;
+      const operationEpoch = authEpochRef.current;
 
       const parsed = workoutDraftSchema.safeParse(draft);
       if (!parsed.success) {
@@ -917,7 +988,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         }),
       );
 
-      if (activeUserIdRef.current !== operationUserId) {
+      if (activeUserIdRef.current !== operationUserId || authEpochRef.current !== operationEpoch) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
@@ -931,9 +1002,8 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("保存結果を確認できませんでした。ページを再読み込みしてください。");
       }
 
-      // 育成ポイントなどの最新値はサーバーの結果が正本。取り直して画面へ反映する
-      const latest = await refreshCloudData();
-      const saved = latest?.records.find((record) => record.id === workoutId);
+      const latest = await refreshChangedWorkout(workoutId, parsed.data.bodyWeightKg !== null ? parsed.data.workoutDate : undefined);
+      const saved = latest?.record;
 
       return saved
         ? { ok: true, data: saved }
@@ -948,7 +1018,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       cloudState.exercises,
       cloudState.records,
       local,
-      refreshCloudData,
+      refreshChangedWorkout,
       supabase,
       usingLocal,
     ],
@@ -967,6 +1037,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
       }
       const operationUserId = authState.userId;
+      const operationEpoch = authEpochRef.current;
 
       const { data, error } = await settle(() =>
         supabase.rpc("delete_workout", {
@@ -975,14 +1046,14 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         }),
       );
 
-      if (activeUserIdRef.current !== operationUserId) {
+      if (activeUserIdRef.current !== operationUserId || authEpochRef.current !== operationEpoch) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
       if (error) {
         // すでに別の端末などで削除されていた場合は、一覧を最新にして成功として扱う
         if (/workout not found/i.test(String((error as { message?: string }).message ?? ""))) {
-          await refreshCloudData();
+          await refreshChangedWorkout(workoutId);
           return { ok: true, data: { growthPointsDelta: 0 } };
         }
 
@@ -991,14 +1062,14 @@ function AppDataBridge({ children }: { children: ReactNode }) {
 
       const result = deleteWorkoutResultSchema.safeParse(data);
       if (!result.success) {
-        await refreshCloudData();
+        await refreshChangedWorkout(workoutId);
         return cloudFailure("削除結果を確認できませんでした。記録の一覧を確認してください。");
       }
 
-      await refreshCloudData();
+      await refreshChangedWorkout(workoutId);
       return { ok: true, data: { growthPointsDelta: result.data.growthPointsDelta } };
     },
-    [authState.userId, cloudReady, local, refreshCloudData, supabase, usingLocal],
+    [authState.userId, cloudReady, local, refreshChangedWorkout, supabase, usingLocal],
   );
 
   const addExercise = useCallback(
@@ -1015,6 +1086,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
       }
       const operationUserId = authState.userId;
+      const operationEpoch = authEpochRef.current;
 
       const normalizedName = name.trim().replace(/\s+/g, " ");
       const parsed = exerciseSchema.safeParse({
@@ -1044,10 +1116,11 @@ function AppDataBridge({ children }: { children: ReactNode }) {
           p_body_part: bodyPart,
           p_uses_bodyweight: options?.usesBodyweight === true,
           p_is_isometric: options?.isIsometric === true,
+          p_expected_user_id: operationUserId,
         }),
       );
 
-      if (activeUserIdRef.current !== operationUserId) {
+      if (activeUserIdRef.current !== operationUserId || authEpochRef.current !== operationEpoch) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
@@ -1101,6 +1174,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
       }
       const operationUserId = authState.userId;
+      const operationEpoch = authEpochRef.current;
 
       const parsed = bodyWeightEntrySchema.safeParse({ date, weightKg });
       if (!parsed.success) {
@@ -1115,10 +1189,11 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         supabase.rpc("save_body_weight", {
           p_log_date: parsed.data.date,
           p_weight_kg: parsed.data.weightKg,
+          p_expected_user_id: operationUserId,
         }),
       );
 
-      if (activeUserIdRef.current !== operationUserId) {
+      if (activeUserIdRef.current !== operationUserId || authEpochRef.current !== operationEpoch) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
@@ -1157,6 +1232,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
       }
       const operationUserId = authState.userId;
+      const operationEpoch = authEpochRef.current;
 
       const parsed = userSettingsSchema.safeParse(settings);
       if (!parsed.success) {
@@ -1173,7 +1249,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         .select("default_sets, weight_unit")
         .single();
 
-      if (activeUserIdRef.current !== operationUserId) {
+      if (activeUserIdRef.current !== operationUserId || authEpochRef.current !== operationEpoch) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
@@ -1211,6 +1287,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
       }
       const operationUserId = authState.userId;
+      const operationEpoch = authEpochRef.current;
 
       if (
         !isValidItemActionAmount(amount) ||
@@ -1228,7 +1305,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         }),
       );
 
-      if (activeUserIdRef.current !== operationUserId) {
+      if (activeUserIdRef.current !== operationUserId || authEpochRef.current !== operationEpoch) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
@@ -1245,30 +1322,16 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("交換結果を確認できませんでした。ページを再読み込みしてください。");
       }
 
-      if (!result.data.created) {
-        const latest = await refreshCloudData();
-        return latest
-          ? { ok: true, data: latest.maso }
-          : cloudFailure("交換は完了していますが、最新の所持数を確認できませんでした。もう一度読み込んでください。");
-      }
-
-      const nextMaso = {
-        ...cloudState.maso,
-        growthPoints: result.data.growthPoints,
-        food: result.data.food,
-        protein: result.data.protein,
-        items: result.data.items,
-      };
-      setCloudState((current) => ({ ...current, maso: nextMaso }));
-      setCloudIssue(null);
-      return { ok: true, data: nextMaso };
+      const latest = await refreshMasoInventory();
+      return latest ? { ok: true, data: latest }
+        : cloudFailure("交換は完了していますが、最新の所持数を確認できませんでした。もう一度読み込んでください。");
     },
     [
       authState.userId,
       cloudReady,
-      cloudState.maso,
       local,
       refreshCloudData,
+      refreshMasoInventory,
       supabase,
       usingLocal,
     ],
@@ -1288,6 +1351,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
       }
       const operationUserId = authState.userId;
+      const operationEpoch = authEpochRef.current;
 
       if (
         !isValidItemActionAmount(amount) ||
@@ -1305,7 +1369,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         }),
       );
 
-      if (activeUserIdRef.current !== operationUserId) {
+      if (activeUserIdRef.current !== operationUserId || authEpochRef.current !== operationEpoch) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
 
@@ -1322,31 +1386,16 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("エサやりの結果を確認できませんでした。ページを再読み込みしてください。");
       }
 
-      if (!result.data.created) {
-        const latest = await refreshCloudData();
-        return latest
-          ? { ok: true, data: latest.maso }
-          : cloudFailure("エサやりは完了していますが、最新の状態を確認できませんでした。もう一度読み込んでください。");
-      }
-
-      const nextMaso = {
-        ...cloudState.maso,
-        level: result.data.level,
-        experience: result.data.experience,
-        food: result.data.food,
-        protein: result.data.protein,
-        items: result.data.items,
-      };
-      setCloudState((current) => ({ ...current, maso: nextMaso }));
-      setCloudIssue(null);
-      return { ok: true, data: nextMaso };
+      const latest = await refreshMasoInventory();
+      return latest ? { ok: true, data: latest }
+        : cloudFailure("エサやりは完了していますが、最新の状態を確認できませんでした。もう一度読み込んでください。");
     },
     [
       authState.userId,
       cloudReady,
-      cloudState.maso,
       local,
       refreshCloudData,
+      refreshMasoInventory,
       supabase,
       usingLocal,
     ],
@@ -1362,6 +1411,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
       }
       const operationUserId = authState.userId;
+      const operationEpoch = authEpochRef.current;
 
       const parsed = displayNameFieldSchema("名前").safeParse(name);
       if (!parsed.success) {
@@ -1374,7 +1424,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
           p_expected_user_id: operationUserId,
         }),
       );
-      if (activeUserIdRef.current !== operationUserId) {
+      if (activeUserIdRef.current !== operationUserId || authEpochRef.current !== operationEpoch) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
       if (error) {
@@ -1428,6 +1478,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         return cloudFailure("クラウドへの接続を確認しています。少し待ってからお試しください。");
       }
       const operationUserId = authState.userId;
+      const operationEpoch = authEpochRef.current;
 
       const parsed = displayNameFieldSchema("表示名").safeParse(displayName);
       if (!parsed.success) {
@@ -1436,9 +1487,9 @@ function AppDataBridge({ children }: { children: ReactNode }) {
 
       // 表示名の正規化と検証はサーバー側で行うため、専用のRPC経由で保存する
       const { data, error } = await settle(() =>
-        supabase.rpc("update_display_name", { p_name: parsed.data }),
+        supabase.rpc("update_display_name", { p_name: parsed.data, p_expected_user_id: operationUserId }),
       );
-      if (activeUserIdRef.current !== operationUserId) {
+      if (activeUserIdRef.current !== operationUserId || authEpochRef.current !== operationEpoch) {
         return cloudFailure("ログイン中のアカウントが変わりました。ページを再読み込みしてください。");
       }
       if (error) {
@@ -1469,7 +1520,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
           ? cloudState.profile
           : {
               displayName:
-                storageMode === "local" ? "ローカルユーザー" : "トレーニー",
+                storageMode === "local" ? "ゲスト" : "トレーニー",
             },
       records: activeState.records,
       exercises: activeState.exercises,
@@ -1481,7 +1532,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
         storageMode === "loading"
           ? null
           : storageMode === "signed-out"
-            ? "ログインの有効期限が切れました。もう一度ログインしてください。"
+            ? null
           : usingCloud
             ? cloudIssueUserId === authState.userId
               ? cloudIssue
@@ -1489,17 +1540,17 @@ function AppDataBridge({ children }: { children: ReactNode }) {
             : local.storageIssue,
       storageMode,
       retryStorage,
-      addWorkout,
-      updateWorkout,
-      deleteWorkout,
-      addExercise,
-      saveBodyWeight,
-      updateSettings,
-      exchangeGrowthPoints,
-      feedMaso,
-      renameMaso,
+      addWorkout: (draft, requestId) => runAction(() => addWorkout(draft, requestId)),
+      updateWorkout: (id, draft, requestId) => runAction(() => updateWorkout(id, draft, requestId)),
+      deleteWorkout: (id, requestId) => runAction(() => deleteWorkout(id, requestId)),
+      addExercise: (name, part, options) => runAction(() => addExercise(name, part, options)),
+      saveBodyWeight: (date, weight) => runAction(() => saveBodyWeight(date, weight)),
+      updateSettings: (settings) => runAction(() => updateSettings(settings)),
+      exchangeGrowthPoints: (kind, amount, requestId) => runAction(() => exchangeGrowthPoints(kind, amount, requestId)),
+      feedMaso: (kind, amount, requestId) => runAction(() => feedMaso(kind, amount, requestId)),
+      renameMaso: (name) => runAction(() => renameMaso(name)),
       clearLocalData,
-      updateProfile,
+      updateProfile: (name) => runAction(() => updateProfile(name)),
     }),
     [
       activeState.bodyWeights,
@@ -1525,6 +1576,7 @@ function AppDataBridge({ children }: { children: ReactNode }) {
       authState.userId,
       renameMaso,
       retryStorage,
+      runAction,
       storageMode,
       updateProfile,
       updateSettings,

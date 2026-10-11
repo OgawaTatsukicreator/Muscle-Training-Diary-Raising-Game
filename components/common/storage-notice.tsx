@@ -7,7 +7,7 @@ import { useState } from "react";
 import { useAppData } from "@/components/providers/app-data-provider";
 
 export function StorageNotice() {
-  const { isReady, retryStorage, storageIssue, storageMode } = useAppData();
+  const { retryStorage, storageIssue, storageMode } = useAppData();
   const [isRetrying, setIsRetrying] = useState(false);
 
   if (!storageIssue) {
@@ -32,7 +32,7 @@ export function StorageNotice() {
       <AlertCircle aria-hidden="true" className="mt-0.5 shrink-0" size={18} />
       <div>
         <p>{storageIssue}</p>
-        {storageMode === "supabase" && !isReady ? (
+        {storageMode === "supabase" ? (
           <button
             type="button"
             onClick={handleRetry}

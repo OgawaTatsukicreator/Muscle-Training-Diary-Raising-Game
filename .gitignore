@@ -13,6 +13,8 @@
 # testing
 /coverage
 /.playwright-cli/
+# Local browser/performance test artifacts: reports, raw measurements, and test tools.
+# Includes /output/playwright/performance-*/; keep these files out of commits/pushes.
 /output/playwright/
 /dev-*-check*.log
 
